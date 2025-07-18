@@ -1,0 +1,83 @@
+# Model Configuration
+model:
+  name: "mixtral-8x7b-storytelling"
+  base_model: "mistralai/Mixtral-8x7B-Instruct-v0.1"
+  max_length: 2048
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 50
+
+# Training Configuration
+training:
+  batch_size: 4
+  learning_rate: 2e-5
+  epochs: 3
+  gradient_accumulation_steps: 8
+  warmup_steps: 100
+  weight_decay: 0.01
+  save_steps: 500
+  eval_steps: 250
+  logging_steps: 50
+  max_grad_norm: 1.0
+
+# Data Configuration
+data:
+  max_sequence_length: 1024
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+  min_story_length: 100
+  max_story_length: 5000
+
+# Age Groups
+age_groups:
+  child: [0, 5]
+  kid: [6, 12]
+  teen: [13, 17]
+  adult: [18, 100]
+
+# Evaluation Configuration
+evaluation:
+  perplexity_buckets: [20, 50, 100]
+  flesch_kincaid_ranges:
+    child: [0, 5.9]
+    kid: [6.0, 12.9]
+    teen: [13.0, 17.9]
+    adult: [18.0, 100]
+  grammar_model: "gpt-3.5-turbo"
+  coherence_model: "gpt-3.5-turbo"
+  toxicity_threshold: 0.5
+
+# History Configuration
+history:
+  max_history_length: 5
+  summary_model: "facebook/bart-large-cnn"
+  max_summary_length: 150
+  title_max_length: 50
+
+# Paths
+paths:
+  data_root: "data"
+  data_raw: "data/raw"
+  data_processed: "data/processed"
+  data_tokenized: "data/tokenized"
+  data_evaluated: "data/evaluated"
+  models: "models"
+  outputs: "outputs"
+  user_history: "outputs/user_history"
+  samples: "outputs/samples"
+  users: "data/users"
+
+# DeepSpeed Configuration
+deepspeed:
+  enabled: true
+  config_path: "configs/deepspeed_config.json"
+
+# Datasets
+datasets:
+  children_stories:
+    kaggle_id: "edenbd/children-stories-text-corpus"
+    files: ["cleaned_merged_fairy_tales_without_eos.txt"]
+  scifi_stories:
+    kaggle_id: "jannesklaas/scifi-stories-text-corpus"
+    files: ["internet_archive_scifi_v3.txt"]
