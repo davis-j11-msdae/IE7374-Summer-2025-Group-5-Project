@@ -29,6 +29,53 @@ data:
   min_story_length: 100
   max_story_length: 5000
 
+# Project Gutenberg Configuration
+gutenberg:
+  min_downloads: 1000  # Minimum downloads required per book
+
+  categories:
+    science_fiction_fantasy:
+      bookshelf_id: 638
+      description: "Science Fiction and Fantasy"
+      target_age_groups: ["teen", "adult"]
+      estimated_books: 120
+
+    children_young_adult:
+      bookshelf_id: 636
+      description: "Children and Young Adult Literature"
+      target_age_groups: ["child", "kid", "teen"]
+      estimated_books: 85
+
+    adventure:
+      bookshelf_id: 644
+      description: "Adventure Stories"
+      target_age_groups: ["kid", "teen", "adult"]
+      estimated_books: 95
+
+    fairy_tales:
+      bookshelf_id: 216
+      description: "Children's Myths, Fairy Tales, etc. "
+      target_age_groups: ["child", "kid"]
+      estimated_books: 7
+
+    mythology_legends_folklore:
+      bookshelf_id: 646
+      description: "Mythology, Legends and Folklore"
+      target_age_groups: ["kid", "teen", "adult"]
+      estimated_books: 65
+
+    humor:
+      bookshelf_id: 641
+      description: "Humor"
+      target_age_groups: ["teen", "adult"]
+      estimated_books: 75
+
+    short_stories:
+      bookshelf_id: 634
+      description: "Short Stories"
+      target_age_groups: ["teen", "adult"]
+      estimated_books: 90
+
 # Age Groups
 age_groups:
   child: [0, 5]
@@ -72,12 +119,3 @@ paths:
 deepspeed:
   enabled: true
   config_path: "configs/deepspeed_config.json"
-
-# Datasets
-datasets:
-  children_stories:
-    kaggle_id: "edenbd/children-stories-text-corpus"
-    files: ["cleaned_merged_fairy_tales_without_eos.txt"]
-  scifi_stories:
-    kaggle_id: "jannesklaas/scifi-stories-text-corpus"
-    files: ["internet_archive_scifi_v3.txt"]

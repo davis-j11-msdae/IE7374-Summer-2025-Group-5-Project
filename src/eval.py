@@ -4,7 +4,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from detoxify import Detoxify
 import textstat
-import openai
+from openai import OpenAI
 from pathlib import Path
 from typing import Dict, List, Any, Tuple
 from dotenv import load_dotenv
@@ -19,8 +19,8 @@ def load_evaluation_models():
     """Load models required for evaluation."""
     load_dotenv()
 
-    # Set OpenAI API key
-    openai.api_key = os.getenv('OPENAI_API_KEY')
+    # Initialize OpenAI client
+    client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
     # Load toxicity detector
     detoxify_model = Detoxify('original')
@@ -32,7 +32,7 @@ def load_evaluation_models():
     if perplexity_tokenizer.pad_token is None:
         perplexity_tokenizer.pad_token = perplexity_tokenizer.eos_token
 
-    return detoxify_model, perplexity_tokenizer, perplexity_model
+    return client, detoxify_model, perplexity_tokenizer, perplexity_model
 
 
 def calculate_perplexity(text: str, tokenizer: AutoTokenizer, model: AutoModelForCausalLM) -> float:
@@ -57,7 +57,7 @@ def categorize_perplexity(perplexity: float, buckets: List[int]) -> str:
         return "high"
 
 
-def evaluate_grammar_coherence(text: str, model_name: str = "gpt-3.5-turbo") -> Dict[str, float]:
+def evaluate_grammar_coherence(text: str, client: OpenAI, model_name: str = "gpt-3.5-turbo") -> Dict[str, float]:
     """Evaluate grammar and coherence using OpenAI API."""
     try:
         prompt = f"""
@@ -70,7 +70,7 @@ def evaluate_grammar_coherence(text: str, model_name: str = "gpt-3.5-turbo") -> 
         Return only two numbers separated by a comma: grammar_score,coherence_score
         """
 
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model=model_name,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=20,
@@ -143,7 +143,7 @@ def evaluate_toxicity(text: str, detoxify_model) -> Dict[str, Any]:
 
 def evaluate_single_text(text: str, models: Tuple, config: Dict[str, Any]) -> Dict[str, Any]:
     """Evaluate a single text on all metrics."""
-    detoxify_model, perplexity_tokenizer, perplexity_model = models
+    client, detoxify_model, perplexity_tokenizer, perplexity_model = models
 
     # Basic text statistics
     text_stats = calculate_text_stats(text)
@@ -153,7 +153,7 @@ def evaluate_single_text(text: str, models: Tuple, config: Dict[str, Any]) -> Di
     perplexity_bucket = categorize_perplexity(perplexity, config['evaluation']['perplexity_buckets'])
 
     # Grammar and coherence
-    grammar_coherence = evaluate_grammar_coherence(text, config['evaluation']['grammar_model'])
+    grammar_coherence = evaluate_grammar_coherence(text, client, config['evaluation']['grammar_model'])
 
     # Age appropriateness
     age_appropriateness = evaluate_age_appropriateness(text, config)
@@ -189,6 +189,29 @@ def evaluate_dataset(dataset_path: Path, models: Tuple, config: Dict[str, Any]) 
     result_df = pd.concat([df, eval_df], axis=1)
 
     return result_df
+
+
+def evaluate_stories_list(stories: List[str], models: Tuple, config: Dict[str, Any],
+                          description: str = "stories") -> List[Dict[str, Any]]:
+    """Evaluate a list of stories and return results."""
+    evaluation_results = []
+
+    for text in create_progress_bar(stories, f"Evaluating {description}"):
+        result = evaluate_single_text(text, models, config)
+        evaluation_results.append(result)
+
+    return evaluation_results
+
+
+def filter_safe_stories(stories: List[str], evaluations: List[Dict[str, Any]]) -> List[str]:
+    """Filter out toxic stories based on evaluation results."""
+    safe_stories = []
+
+    for story, eval_result in zip(stories, evaluations):
+        if not eval_result['is_toxic']:
+            safe_stories.append(story)
+
+    return safe_stories
 
 
 def evaluate_all_datasets() -> Dict[str, pd.DataFrame]:

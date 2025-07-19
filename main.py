@@ -17,13 +17,13 @@ def main_menu():
         print("=" * 60)
         print("1. Check Environment")
         print("2. Download Data and Models")
-        print("3. Process Raw Data")
+        print("3. Process and Evaluate Data")
         print("4. Tokenize Data")
-        print("5. Evaluate Data")
-        print("6. Train Model")
-        print("7. Process Sample Stories")
-        print("8. Interactive Story Creation")
-        print("9. Generate Users File")
+        print("5. Train Model")
+        print("6. Process Sample Stories")
+        print("7. Interactive Story Creation")
+        print("8. Generate Users File")
+        print("9. Manual Evaluation Only")
         print("10. Exit")
         print("=" * 60)
 
@@ -38,15 +38,15 @@ def main_menu():
         elif choice == "4":
             tokenize_data()
         elif choice == "5":
-            evaluate_data()
-        elif choice == "6":
             train_model()
-        elif choice == "7":
+        elif choice == "6":
             process_samples()
-        elif choice == "8":
+        elif choice == "7":
             interactive_stories()
-        elif choice == "9":
+        elif choice == "8":
             generate_users()
+        elif choice == "9":
+            evaluate_data()
         elif choice == "10":
             print("👋 Goodbye!")
             sys.exit(0)
@@ -82,8 +82,9 @@ def download_data():
 
         print("\n📦 Starting data and model download...")
         print("This will download:")
-        print("  - Children's stories dataset from Kaggle")
-        print("  - Sci-fi stories dataset from Kaggle")
+        print("  - Children's stories dataset from Project Gutenberg")
+        print("  - Sci-fi and fantasy stories from Project Gutenberg")
+        print("  - Adventure and fairy tale stories from Project Gutenberg")
         print("  - Mixtral 8x7B base model from Hugging Face")
         print("\nNote: This may take 30-60 minutes and requires ~50GB storage")
 
@@ -102,18 +103,21 @@ def download_data():
 
 
 def process_data():
-    """Process raw data files."""
-    log_operation_status("Data processing")
+    """Process raw data files with integrated evaluation."""
+    log_operation_status("Data processing with evaluation")
 
     try:
         from src.data_loader import main as loader_main
 
-        print("\n⚙️ Processing raw data files...")
+        print("\n⚙️ Processing and evaluating raw data files...")
         print("This will:")
-        print("  - Extract stories from downloaded text files")
+        print("  - Extract stories from downloaded Project Gutenberg files")
         print("  - Clean and filter content")
         print("  - Assign age groups to stories")
-        print("  - Save processed datasets")
+        print("  - Evaluate stories for quality, safety, and appropriateness")
+        print("  - Filter out toxic or inappropriate content")
+        print("  - Save processed and evaluated datasets")
+        print("\nNote: Requires OpenAI API key for grammar/coherence evaluation")
 
         loader_main()
 
@@ -134,7 +138,7 @@ def tokenize_data():
 
         print("\n🔤 Tokenizing processed datasets...")
         print("This will:")
-        print("  - Load processed story datasets")
+        print("  - Load processed and evaluated story datasets")
         print("  - Format stories with age-appropriate instructions")
         print("  - Tokenize using Mixtral tokenizer")
         print("  - Create train/validation/test splits")
@@ -150,21 +154,26 @@ def tokenize_data():
 
 
 def evaluate_data():
-    """Evaluate processed datasets."""
-    log_operation_status("Data evaluation")
+    """Manually evaluate processed datasets (if not done during processing)."""
+    log_operation_status("Manual data evaluation")
 
     try:
         from src.eval import main as eval_main
 
-        print("\n📊 Evaluating processed datasets...")
+        print("\n📊 Manually evaluating processed datasets...")
         print("This will:")
         print("  - Analyze text quality (grammar, coherence)")
         print("  - Calculate readability scores")
         print("  - Check content safety (toxicity)")
         print("  - Generate evaluation statistics")
-        print("\nNote: Requires OpenAI API key for grammar/coherence evaluation")
+        print("\nNote: This is only needed if evaluation wasn't done during processing")
+        print("      or if you want to re-evaluate with different parameters")
 
-        eval_main()
+        confirm = input("\nProceed with manual evaluation? (y/N): ").strip().lower()
+        if confirm == 'y':
+            eval_main()
+        else:
+            print("Manual evaluation cancelled.")
 
     except ImportError as e:
         print(f"❌ Error importing evaluation module: {e}")
@@ -311,8 +320,8 @@ def display_welcome():
     print("An AI-powered storytelling system using Mixtral 8x7B")
     print("Features:")
     print("  • Age-appropriate story generation (child, kid, teen, adult)")
+    print("  • Integrated quality evaluation and safety filtering")
     print("  • Story history and continuation")
-    print("  • Quality evaluation and safety filtering")
     print("  • Interactive user sessions")
     print("=" * 60)
 
@@ -335,7 +344,11 @@ def main():
         return
 
     if not users_file.exists():
-        print("\n💡 Users file not found. Run option 9 to generate users first.")
+        print("\n💡 Users file not found. Run option 8 to generate users first.")
+
+    print("\n🔄 RECOMMENDED WORKFLOW:")
+    print("1. Check Environment → 2. Download Data → 8. Generate Users →")
+    print("3. Process Data → 4. Tokenize → 5. Train → 6. Test Samples → 7. Interactive")
 
     # Start main menu loop
     try:
