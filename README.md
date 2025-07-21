@@ -20,8 +20,10 @@ personalized-storytelling/
 │   ├── model_config.yaml          # Model and training configuration
 │   └── deepspeed_config.json      # DeepSpeed optimization settings
 ├── utils/
-│   └── helpers.py                 # Common utility functions
-├── src/
+│   ├── helpers.py                 # Common utility functions
+│   ├── environment_check.py       # System validation
+│   ├── colab_env_setup.py         # For use in properly preparing new colab runtimes
+│   ├── environment_check.py       # System validation
 │   ├── environment_check.py       # System validation
 │   ├── generate_users.py          # User account generator
 │   ├── download_data.py           # Data and model downloading
@@ -38,12 +40,15 @@ personalized-storytelling/
 │   ├── tokenized/                 # Tokenized datasets for training
 │   ├── evaluated/                 # Quality-assessed stories
 │   └── users/                     # User authentication data
-├── models/                        # Base and fine-tuned models
+├── models/                        
+│   ├── mixtral-8x7b		   # Base Model
+│   ├── story_llm		   # Fine-Tuned Model
 ├── outputs/
 │   ├── user_history/              # Individual user story histories
 │   └── samples/                   # Sample evaluation results
 ├── logs/                          # System logs
-├── main.py                        # Main control interface
+├── src/
+│   └── Full.py                    # Full control interface
 ├── requirements.txt               # Python dependencies
 └── README.md                      # This file
 ```
@@ -53,9 +58,22 @@ personalized-storytelling/
 ### 1. Environment Setup
 
 ```bash
+## Google Colab
+# Option 1: Upload colab_env_setup.py to Colab
+		run python exec(open("colab_env_setup.py").read())
+# Option 2: Upload colab_env_setup.py to Google Drive, run 
+    		for root, dirs, files in os.walk("/content/drive"):
+        		if "colab_env_setup.py" in files:
+            			exec(open(os.path.join(root, "colab_env_setup.py")).read())
+#Register Secret Keys
+OPENAI_API_KEY=your_openai_api_key
+HF_TOKEN=your_huggingface_token
+KAGGLE_USERNAME=your_kaggle_username
+KAGGLE_KEY=your_kaggle_key
+
+## Local/Other
 # Clone the repository
-git clone <repository-url>
-cd personalized-storytelling
+git clone https://github.com/davis-j11-msdae/IE7374-Summer-2025-Group-5-Project.git
 
 # Install dependencies
 pip install -r requirements.txt
@@ -69,17 +87,9 @@ KAGGLE_KEY=your_kaggle_key
 EOF
 ```
 
-### 2. Generate Users
+### 2. Run Main System
 
-```bash
-python generate_users.py
-```
-
-### 3. Run Main System
-
-```bash
-python main.py
-```
+exec(open('src/full.py').read())
 
 Follow the menu options in order:
 1. Check Environment
