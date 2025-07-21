@@ -1,4 +1,3 @@
-# IE7374-Summer-2025-Group-5-Project
 # Personalized Storytelling System
 
 An AI-powered storytelling system that fine-tunes Mixtral 8x7B to generate age-appropriate stories with user history integration and comprehensive evaluation.
@@ -6,24 +5,21 @@ An AI-powered storytelling system that fine-tunes Mixtral 8x7B to generate age-a
 ## 🎯 Project Overview
 
 This system creates personalized stories for users of different ages by:
-- Fine-tuning Mixtral 8x7B on children's and sci-fi story datasets
+- Fine-tuning Mixtral 8x7B on children's and sci-fi story datasets from Project Gutenberg
 - Generating age-appropriate content for 4 age groups: child (0-5), kid (6-12), teen (13-17), adult (18+)
-- Maintaining user story history with summarization
+- Maintaining user story history with automatic summarization
 - Evaluating story quality, safety, and age appropriateness
 - Supporting story continuation and interactive sessions
 
 ## 📁 Project Structure
 
 ```
-personalized-storytelling/
+IE7574-Summer-2025-Group-5-Project/
 ├── configs/
 │   ├── model_config.yaml          # Model and training configuration
 │   └── deepspeed_config.json      # DeepSpeed optimization settings
 ├── utils/
 │   ├── helpers.py                 # Common utility functions
-│   ├── environment_check.py       # System validation
-│   ├── colab_env_setup.py         # For use in properly preparing new colab runtimes
-│   ├── environment_check.py       # System validation
 │   ├── environment_check.py       # System validation
 │   ├── generate_users.py          # User account generator
 │   ├── download_data.py           # Data and model downloading
@@ -40,15 +36,15 @@ personalized-storytelling/
 │   ├── tokenized/                 # Tokenized datasets for training
 │   ├── evaluated/                 # Quality-assessed stories
 │   └── users/                     # User authentication data
-├── models/                        
-│   ├── mixtral-8x7b		   # Base Model
-│   ├── story_llm		   # Fine-Tuned Model
+├── models/
+│   ├── mixtral-8x7b-base/         # Base Mixtral model
+│   └── tuned_story_llm/           # Fine-tuned storytelling model
 ├── outputs/
 │   ├── user_history/              # Individual user story histories
 │   └── samples/                   # Sample evaluation results
 ├── logs/                          # System logs
 ├── src/
-│   └── Full.py                    # Full control interface
+│   └── Full.py                    # Main control interface
 ├── requirements.txt               # Python dependencies
 └── README.md                      # This file
 ```
@@ -58,22 +54,9 @@ personalized-storytelling/
 ### 1. Environment Setup
 
 ```bash
-## Google Colab
-# Option 1: Upload colab_env_setup.py to Colab
-		run python exec(open("colab_env_setup.py").read())
-# Option 2: Upload colab_env_setup.py to Google Drive, run 
-    		for root, dirs, files in os.walk("/content/drive"):
-        		if "colab_env_setup.py" in files:
-            			exec(open(os.path.join(root, "colab_env_setup.py")).read())
-#Register Secret Keys
-OPENAI_API_KEY=your_openai_api_key
-HF_TOKEN=your_huggingface_token
-KAGGLE_USERNAME=your_kaggle_username
-KAGGLE_KEY=your_kaggle_key
-
-## Local/Other
 # Clone the repository
-git clone https://github.com/davis-j11-msdae/IE7374-Summer-2025-Group-5-Project.git
+git clone <repository-url>
+cd IE7574-Summer-2025-Group-5-Project
 
 # Install dependencies
 pip install -r requirements.txt
@@ -87,203 +70,223 @@ KAGGLE_KEY=your_kaggle_key
 EOF
 ```
 
-### 2. Run Main System
+### 2. Run the System
 
-exec(open('src/full.py').read())
+```bash
+# Navigate to src directory and run main control script
+cd src
+python Full.py
+```
 
-Follow the menu options in order:
+### 3. System Workflow
+
+**Admin Workflow** (requires admin login):
 1. Check Environment
-2. Download Data and Models
-3. Process Raw Data
-4. Tokenize Data
-5. Evaluate Data (optional)
+2. Download Data and Models  
+3. Generate Users File
+4. Process and Evaluate Data
+5. Tokenize Data
 6. Train Model
 7. Process Sample Stories
 8. Interactive Story Creation
+
+**User Workflow** (regular user login):
+- Direct access to Interactive Story Creation
 
 ## 🔧 Configuration
 
 ### Model Configuration (`configs/model_config.yaml`)
 
 Key settings:
-- **Model**: Mixtral 8x7B base model
-- **Training**: 3 epochs, batch size 4, learning rate 2e-5
+- **Model**: Mixtral 8x7B base model from Hugging Face
+- **Training**: 3 epochs, batch size 4, learning rate 2e-5, DeepSpeed optimization
 - **Age Groups**: Child (0-5), Kid (6-12), Teen (13-17), Adult (18+)
-- **Evaluation**: Perplexity, grammar, coherence, toxicity checking
+- **Data Sources**: Project Gutenberg categories with configurable minimum downloads
+- **Evaluation**: Perplexity, grammar, coherence, toxicity, and readability metrics
 
 ### DeepSpeed Configuration (`configs/deepspeed_config.json`)
 
-Optimized for A100 GPU training with:
+Optimized for A100 GPU training:
 - ZeRO Stage 2 optimization
-- CPU offloading for optimizer
+- CPU optimizer offloading
 - FP16 mixed precision
-- Gradient accumulation
+- Gradient accumulation and clipping
 
 ## 📊 Data Pipeline
 
-### 1. Download Data
-- **Children's Stories**: Kaggle fairy tales corpus
-- **Sci-Fi Stories**: Kaggle science fiction corpus
-- **Base Model**: Mixtral 8x7B from Hugging Face
+### 1. Data Download (`utils/download_data.py`)
+- **Project Gutenberg Stories**: Automated download from multiple categories
+  - Science Fiction & Fantasy
+  - Children's & Young Adult Literature  
+  - Adventure Stories
+  - Fairy Tales & Folk Tales
+  - Mythology & Folklore
+  - Humor and Short Stories
+- **Base Model**: Mixtral 8x7B from Hugging Face Hub
+- **Copyright Validation**: Automatic public domain verification
 
-### 2. Data Processing
-- Extract individual stories from text files
-- Clean and filter content
-- Assign age groups based on content type
-- Generate statistics and summaries
+### 2. Data Processing (`utils/data_loader.py`)
+- Extract individual stories from downloaded collections
+- Clean and filter content for quality
+- Assign age groups based on source categories
+- **Integrated Evaluation**: Quality, safety, and appropriateness checking
+- Generate comprehensive statistics and summaries
 
-### 3. Tokenization
+### 3. Tokenization (`utils/data_tokenizer.py`)
 - Format stories with age-appropriate instructions
-- Tokenize using Mixtral tokenizer
+- Tokenize using Mixtral tokenizer with padding
 - Create train/validation/test splits (80/10/10)
+- Generate tokenization statistics and validation
 
-### 4. Evaluation (Optional)
-- **Quality Metrics**: Grammar and coherence scoring via OpenAI API
-- **Readability**: Flesch-Kincaid grade level analysis
-- **Safety**: Toxicity detection using Detoxify
-- **Age Appropriateness**: Automated classification
+### 4. Model Training (`utils/train.py`)
+- Fine-tune Mixtral 8x7B on processed story datasets
+- DeepSpeed optimization for memory efficiency
+- Automatic model saving and evaluation metrics
+- Comprehensive training statistics and validation
 
-## 🎭 Story Generation
+## 🎭 Story Generation Features
 
 ### User Authentication
-- 20 pre-generated users (5 per age group)
-- Username format: `child_1`, `kid_1`, `teen_1`, `adult_1`
-- Default password: `test`
+- **Admin Users**: Full system access including training and configuration
+- **Regular Users**: Story creation and history management
+- **Pre-generated Users**: 20 users across age groups (username format: `child_1`, `kid_1`, etc.)
+- **Default Credentials**: Password `test` for regular users, `admin` for admin user
 
-### Story Features
+### Story Generation
 - **Age-Appropriate Content**: Automatic adjustment based on user age
 - **History Integration**: Stories can reference previous narratives
-- **Story Continuation**: Extend existing stories seamlessly
+- **Story Continuation**: Seamlessly extend existing stories
 - **Quality Assurance**: Automatic filtering of inappropriate content
+- **Real-time Evaluation**: Grammar, coherence, and safety scoring
 
-### Interactive Sessions
+### Interactive Features
 - User login with age verification
 - Create new stories or continue existing ones
-- View and manage story history
-- Save stories with custom titles
+- View and manage personal story history with summaries
+- Save stories with suggested or custom titles
+- Delete unwanted stories from history
 
-## 📈 Sample Stories
-
-The system includes 10 predefined sample prompts:
-- **2 prompts each** for child, kid, teen, and adult users
-- **2 continuation prompts** demonstrating history integration
-- **Comprehensive evaluation** of all generated content
-- **Results saved** in `outputs/samples/`
-
-## 🛡️ Safety and Quality
+## 📈 Evaluation and Quality Control
 
 ### Content Filtering
 - **Toxicity Detection**: Automatic filtering using Detoxify
-- **Age Verification**: Stories matched to appropriate age groups
+- **Age Verification**: Stories matched to appropriate age groups using Flesch-Kincaid scoring
 - **Title Validation**: User-provided titles checked for appropriateness
-- **Retry Logic**: Automatic regeneration if content fails checks
+- **Retry Logic**: Automatic regeneration if content fails quality checks
 
 ### Quality Metrics
-- **Perplexity**: Measured using GPT-2
-- **Grammar/Coherence**: Scored via OpenAI API
-- **Readability**: Flesch-Kincaid grade level
-- **Length Validation**: Stories within appropriate word limits
+- **Perplexity**: Measured using GPT-2 for text naturalness
+- **Grammar/Coherence**: Scored via OpenAI GPT-3.5-turbo API
+- **Readability**: Flesch-Kincaid grade level analysis
+- **Safety**: Comprehensive toxicity detection across multiple categories
+- **Length Validation**: Stories within appropriate word count limits
 
-## 💾 User History
+## 💾 User History Management
 
-### Features
-- **Automatic Summarization**: BART-large-CNN for story summaries
-- **Title Management**: Suggested and custom titles
-- **Story Continuation**: Two modes - update original or save as new
-- **Statistics Tracking**: Word counts, creation dates, user preferences
+### Features (`utils/history.py`)
+- **Automatic Summarization**: BART-large-CNN for concise story summaries
+- **Title Management**: AI-suggested titles with custom override option
+- **Story Continuation**: Two modes - update original or save as new story
+- **Statistics Tracking**: Word counts, creation dates, reading analytics
+- **Storage Optimization**: Maximum 5 stories per user with automatic cleanup
 
 ### Storage Format
 - Individual JSON files per user in `outputs/user_history/`
-- Maximum 5 stories per user (configurable)
 - Rich metadata including prompts, evaluations, timestamps
+- Cross-session persistence with data validation
 
 ## 🖥️ Hardware Requirements
 
-### Minimum (Training)
-- **GPU**: 40GB+ VRAM (A100 recommended)
-- **RAM**: 32GB system memory
-- **Storage**: 100GB free space
-- **CUDA**: Compatible GPU drivers
+### Training Requirements
+- **GPU**: A100 with 40GB+ VRAM (required for Mixtral 8x7B)
+- **RAM**: 32GB+ system memory
+- **Storage**: 100GB+ free space for models and data
+- **CUDA**: Compatible GPU drivers and toolkit
 
-### Inference
-- **GPU**: 16GB+ VRAM (RTX 4090, A6000)
-- **RAM**: 16GB system memory
-- **Storage**: 60GB for models
+### Inference Requirements  
+- **GPU**: 16GB+ VRAM (RTX 4090, A6000, or equivalent)
+- **RAM**: 16GB+ system memory
+- **Storage**: 60GB+ for base and fine-tuned models
 
-## 🔍 Monitoring and Logs
+## 🔍 System Monitoring
 
 ### Status Tracking
-- Real-time operation status updates
-- Progress bars for long-running operations
-- Comprehensive error reporting
-- Performance metrics collection
+- Real-time operation status with timestamps
+- Progress bars for long-running operations (>1 minute)
+- Comprehensive error reporting with context
+- Performance metrics and resource usage monitoring
 
 ### Cache Management
 - Automatic detection of existing processed data
 - User prompts for cache overwrite decisions
-- Efficient reuse of previous work
-- Storage optimization
+- Efficient reuse of previous work and computations
+- Storage optimization and cleanup utilities
 
-## 🧪 Testing and Validation
+## 🧪 Sample Stories and Testing
 
-### Sample Evaluation
-- 10 comprehensive test prompts
-- Coverage of all age groups
-- History continuation testing
-- Quality and safety validation
+### Automated Testing (`utils/samples.py`)
+- 10 comprehensive test prompts across all age groups
+- Story continuation testing with context preservation
+- Quality and safety validation for all generated content
+- Detailed evaluation reports with metrics and statistics
 
-### Environment Checks
-- Dependency verification
-- GPU availability confirmation
-- API key validation
-- Directory structure verification
+### Sample Categories
+- **2 prompts each** for child, kid, teen, and adult age groups
+- **2 continuation prompts** demonstrating history integration
+- **Comprehensive evaluation** including grammar, coherence, and safety
+- **Results archived** in `outputs/samples/` with timestamps
 
 ## 📚 Usage Examples
 
-### Generate a Story
+### Complete System Setup
 ```bash
-python main.py
-# Select option 8: Interactive Story Creation
-# Login with username: child_1, password: test
-# Create new story with prompt: "A magical adventure"
+cd src
+python Full.py
+# Login as admin (username: admin, password: admin)
+# Follow workflow: 1 → 2 → 8 → 3 → 4 → 5 → 6 → 7
 ```
 
-### Process Sample Stories
+### User Story Creation
 ```bash
-python main.py
-# Select option 7: Process Sample Stories
-# Review generated stories and evaluation metrics
+cd src  
+python Full.py
+# Login as regular user (e.g., username: child_1, password: test)
+# Create and manage personal stories
 ```
 
-### Continue a Story
+### Direct Component Access
 ```bash
-# After creating initial stories
-# Select "Continue existing story"
-# Choose story from history
-# Provide continuation prompt
+# Check system environment
+cd utils && python environment_check.py
+
+# Generate user accounts  
+cd utils && python generate_users.py
+
+# Download data only
+cd utils && python download_data.py
 ```
 
 ## 🔧 Troubleshooting
 
 ### Common Issues
-1. **CUDA Out of Memory**: Reduce batch size in config
-2. **Download Failures**: Check internet connection and API keys
-3. **Model Loading Errors**: Verify model files are complete
-4. **Evaluation Failures**: Ensure OpenAI API key is valid
+1. **CUDA Out of Memory**: Use DeepSpeed config, reduce batch sizes
+2. **Download Failures**: Verify internet connection and API credentials
+3. **Model Loading Errors**: Ensure complete model downloads and sufficient disk space
+4. **OpenAI API Issues**: Verify API key validity and rate limits
 
 ### Performance Optimization
-- Use DeepSpeed for memory efficiency
-- Enable gradient checkpointing
-- Optimize batch sizes for your hardware
-- Use FP16 precision when possible
+- Enable DeepSpeed for memory-efficient training
+- Use gradient checkpointing to reduce memory usage
+- Optimize batch sizes for available hardware
+- Leverage FP16 precision when supported
 
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create feature branch
-3. Add comprehensive tests
-4. Ensure all evaluations pass
-5. Submit pull request
+2. Create feature branch with descriptive name
+3. Add comprehensive tests for new functionality
+4. Ensure all existing tests and evaluations pass
+5. Submit pull request with detailed description
 
 ## 📄 License
 
@@ -291,12 +294,13 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 🙏 Acknowledgments
 
-- **Mistral AI** for the Mixtral 8x7B model
-- **Hugging Face** for transformers and datasets
-- **Kaggle** for story datasets
-- **OpenAI** for evaluation APIs
-- **Microsoft** for DeepSpeed optimization
+- **Mistral AI** for the Mixtral 8x7B foundation model
+- **Hugging Face** for transformers library and model hosting
+- **Project Gutenberg** for public domain literature datasets
+- **OpenAI** for evaluation and quality assessment APIs
+- **Microsoft** for DeepSpeed optimization framework
+- **Meta** for BART summarization model
 
 ---
 
-*Built for creative storytelling and AI research*
+*Built for educational research in AI-powered creative storytelling*

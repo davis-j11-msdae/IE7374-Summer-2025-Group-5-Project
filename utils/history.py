@@ -7,8 +7,10 @@ from transformers import pipeline
 from detoxify import Detoxify
 from utils.helpers import (
     load_config, ensure_dir_exists, save_json, load_json,
-    log_operation_status
-)
+    log_operation_status, set_cwd)
+
+# Get current working directory for path operations
+cwd = set_cwd()
 
 
 class StoryHistoryManager:

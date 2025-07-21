@@ -2,10 +2,12 @@ from pathlib import Path
 from typing import Dict, List, Any
 from utils.helpers import (
     load_config, ensure_dir_exists, save_json,
-    log_operation_status
-)
+    log_operation_status, set_cwd)
 from utils.model_runner import StoryModelRunner
 from utils.history import StoryHistoryManager
+
+# Get current working directory for path operations
+cwd = set_cwd()
 
 # Sample prompts for different age groups
 SAMPLE_PROMPTS = {

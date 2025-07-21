@@ -14,7 +14,6 @@ else:
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 def find_project_folder(start_path, target_folder="IE7374-Summer-2025-Group-5-Project"):

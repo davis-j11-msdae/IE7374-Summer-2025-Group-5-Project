@@ -2,10 +2,12 @@ import os
 import sys
 import torch
 import importlib
-from pathlib import Path
 from typing import Dict, List, Any
 from dotenv import load_dotenv
-from utils.helpers import load_config, log_operation_status
+from helpers import load_config, log_operation_status, set_cwd
+
+# Get current working directory for path operations
+cwd = set_cwd()
 
 
 def check_environment_variables() -> Dict[str, bool]:
@@ -82,7 +84,7 @@ def check_directory_structure() -> Dict[str, bool]:
 
     dir_status = {}
     for dir_path in required_dirs:
-        dir_status[dir_path] = Path(dir_path).exists()
+        dir_status[dir_path] = os.path.exists(dir_path)
 
     return dir_status
 
@@ -93,14 +95,14 @@ def check_data_files() -> Dict[str, bool]:
     paths = config['paths']
 
     files_to_check = {
-        'users_file': Path(paths['users']) / "users.txt",
-        'config_file': Path("configs/model_config.yaml"),
-        'deepspeed_config': Path("configs/deepspeed_config.json")
+        'users_file': os.path.join(paths['users'], "users.txt"),
+        'config_file': os.path.join(cwd, "configs", "model_config.yaml"),
+        'deepspeed_config': os.path.join(cwd, "configs", "deepspeed_config.json")
     }
 
     file_status = {}
     for file_name, file_path in files_to_check.items():
-        file_status[file_name] = file_path.exists()
+        file_status[file_name] = os.path.exists(file_path)
 
     return file_status
 

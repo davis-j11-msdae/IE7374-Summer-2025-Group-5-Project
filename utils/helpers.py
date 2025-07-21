@@ -2,24 +2,32 @@ import os
 import json
 import yaml
 import pickle
-import pandas as pd
 import numpy as np
-from typing import Dict, List, Any, Optional, Union
-import logging
-from pathlib import Path
+from typing import Dict, List, Any
 import re
 from datetime import datetime
+import importlib.util
 
+def set_cwd():
+    if importlib.util.find_spec("google.colab") is not None:
+        cwd = os.getcwd()
+    else:
+        cwd = os.getcwd().rstrip(r"\src")
+    os.chdir(cwd)
+    return cwd
 
-def load_config(config_path: str = "configs/model_config.yaml") -> Dict[str, Any]:
+def load_config(config_path: str = None) -> Dict[str, Any]:
     """Load configuration from YAML file."""
+    if config_path is None:
+        config_path = os.path.join(set_cwd(), "configs", "model_config.yaml")
+
     with open(config_path, 'r') as file:
         return yaml.safe_load(file)
 
 
 def ensure_dir_exists(path: str) -> None:
     """Create directory if it doesn't exist."""
-    Path(path).mkdir(parents=True, exist_ok=True)
+    os.makedirs(path, exist_ok=True)
 
 
 def clean_text(text: str) -> str:

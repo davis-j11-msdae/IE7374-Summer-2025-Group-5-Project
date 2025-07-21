@@ -13,7 +13,10 @@ from utils.helpers import (
     load_config, ensure_dir_exists, calculate_text_stats, get_age_group,
     check_cache_overwrite, log_operation_status, create_progress_bar, batch_process
 )
+from helpers import set_cwd
 
+# Get current working directory for path operations
+cwd = set_cwd()
 
 def load_evaluation_models():
     """Load models required for evaluation."""

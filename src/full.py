@@ -5,59 +5,72 @@ Provides authentication and role-based menu access.
 """
 
 import sys
+import os
 import pandas as pd
-from pathlib import Path
-from utils.helpers import log_operation_status
+import importlib.util
+
+
+if importlib.util.find_spec("google.colab") is not None:
+    cwd = os.getcwd()
+else:
+    cwd = os.getcwd().rstrip(r"\src")
+os.chdir(cwd)
+
+# Add utils to path for imports
+sys.path.append(os.path.join(cwd, 'utils'))
+from helpers import log_operation_status
+
 
 def authenticate_user():
     """Authenticate user and return user info."""
-    users_file = Path("../data/users/users.txt")
-    
-    if not users_file.exists():
+    users_file = os.path.join(cwd, "data", "users", "users.txt")
+
+    if not os.path.exists(users_file):
         print("❌ Users file not found. Please run generate_users.py first.")
         return None
-    
+
     try:
         users_df = pd.read_csv(users_file)
     except Exception as e:
         print(f"❌ Error loading users file: {e}")
         return None
-    
+
     print("\n🔐 USER AUTHENTICATION")
     print("=" * 30)
-    
+
     username = input("Username: ").strip()
     password = input("Password: ").strip()
-    
+
     user_row = users_df[users_df['username'] == username]
-    
+
     if user_row.empty:
         print("❌ Invalid username")
         return None
-    
+
     user_data = user_row.iloc[0]
-    
+
     if user_data['password'] != password:
         print("❌ Invalid password")
         return None
-    
+
     user_info = {
         'username': username,
         'age': int(user_data['age']),
         'admin': int(user_data.get('admin', 0))
     }
-    
+
     role = "Admin" if user_info['admin'] else "User"
     print(f"✅ Welcome {username}! (Age: {user_info['age']}, Role: {role})")
-    
+
     return user_info
+
 
 def admin_menu():
     """Display admin menu and handle selection."""
     while True:
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("🛠️ ADMIN MENU - PERSONALIZED STORYTELLING SYSTEM")
-        print("="*60)
+        print("=" * 60)
         print("1. Check Environment")
         print("2. Download Data and Models")
         print("3. Process and Evaluate Data")
@@ -68,10 +81,10 @@ def admin_menu():
         print("8. Generate Users File")
         print("9. Manual Evaluation Only")
         print("10. Exit")
-        print("="*60)
-        
+        print("=" * 60)
+
         choice = input("Select option (1-10): ").strip()
-        
+
         if choice == "1":
             check_environment()
         elif choice == "2":
@@ -96,24 +109,26 @@ def admin_menu():
         else:
             print("❌ Invalid choice. Please try again.")
 
+
 def check_environment():
     """Check system environment and dependencies."""
     log_operation_status("Environment check")
-    
-    from utils.environment_check import run_full_environment_check, print_environment_report
-    
+
+    from environment_check import run_full_environment_check, print_environment_report
+
     print("\n🔍 Checking system environment...")
     results = run_full_environment_check()
     print_environment_report(results)
-    
+
     input("\nPress Enter to continue...")
+
 
 def download_data():
     """Download datasets and models."""
     log_operation_status("Data download")
-    
-    from utils.download_data import main as download_main
-    
+
+    from download_data import main as download_main
+
     print("\n📦 Starting data and model download...")
     print("This will download:")
     print("  - Children's stories dataset from Project Gutenberg")
@@ -121,21 +136,22 @@ def download_data():
     print("  - Adventure and fairy tale stories from Project Gutenberg")
     print("  - Mixtral 8x7B base model from Hugging Face")
     print("\nNote: This may take 30-60 minutes and requires ~50GB storage")
-    
+
     confirm = input("\nProceed with download? (y/N): ").strip().lower()
     if confirm == 'y':
         download_main()
     else:
         print("Download cancelled.")
-        
+
     input("\nPress Enter to continue...")
+
 
 def process_data():
     """Process raw data files with integrated evaluation."""
     log_operation_status("Data processing with evaluation")
-    
-    from utils.data_loader import main as loader_main
-    
+
+    from data_loader import main as loader_main
+
     print("\n⚙️ Processing and evaluating raw data files...")
     print("This will:")
     print("  - Extract stories from downloaded Project Gutenberg files")
@@ -145,34 +161,36 @@ def process_data():
     print("  - Filter out toxic or inappropriate content")
     print("  - Save processed and evaluated datasets")
     print("\nNote: Requires OpenAI API key for grammar/coherence evaluation")
-    
+
     loader_main()
-    
+
     input("\nPress Enter to continue...")
+
 
 def tokenize_data():
     """Tokenize processed datasets."""
     log_operation_status("Data tokenization")
-    
-    from utils.data_tokenizer import main as tokenizer_main
-    
+
+    from data_tokenizer import main as tokenizer_main
+
     print("\n🔤 Tokenizing processed datasets...")
     print("This will:")
     print("  - Load processed and evaluated story datasets")
     print("  - Format stories with age-appropriate instructions")
     print("  - Tokenize using Mixtral tokenizer")
     print("  - Create train/validation/test splits")
-    
+
     tokenizer_main()
-    
+
     input("\nPress Enter to continue...")
+
 
 def evaluate_data():
     """Manually evaluate processed datasets."""
     log_operation_status("Manual data evaluation")
-    
-    from utils.eval import main as eval_main
-    
+
+    from eval import main as eval_main
+
     print("\n📊 Manually evaluating processed datasets...")
     print("This will:")
     print("  - Analyze text quality (grammar, coherence)")
@@ -181,21 +199,22 @@ def evaluate_data():
     print("  - Generate evaluation statistics")
     print("\nNote: This is only needed if evaluation wasn't done during processing")
     print("      or if you want to re-evaluate with different parameters")
-    
+
     confirm = input("\nProceed with manual evaluation? (y/N): ").strip().lower()
     if confirm == 'y':
         eval_main()
     else:
         print("Manual evaluation cancelled.")
-    
+
     input("\nPress Enter to continue...")
+
 
 def train_model():
     """Train the storytelling model."""
     log_operation_status("Model training")
-    
-    from utils.train import main as train_main
-    
+
+    from train import main as train_main
+
     print("\n🚀 Training storytelling model...")
     print("This will:")
     print("  - Load Mixtral 8x7B base model")
@@ -203,21 +222,22 @@ def train_model():
     print("  - Use DeepSpeed for memory optimization")
     print("  - Save fine-tuned model")
     print("\nNote: Requires significant GPU memory and time (1-3 hours)")
-    
+
     confirm = input("\nProceed with training? (y/N): ").strip().lower()
     if confirm == 'y':
         train_main()
     else:
         print("Training cancelled.")
-        
+
     input("\nPress Enter to continue...")
+
 
 def process_samples():
     """Process sample stories."""
     log_operation_status("Sample processing")
-    
-    from utils.samples import main as samples_main
-    
+
+    from samples import main as samples_main
+
     print("\n📝 Processing sample stories...")
     print("This will:")
     print("  - Generate stories for 10 sample prompts")
@@ -225,63 +245,65 @@ def process_samples():
     print("  - Include story continuation examples")
     print("  - Save stories to user history")
     print("  - Generate comprehensive evaluation report")
-    
+
     samples_main()
-    
+
     input("\nPress Enter to continue...")
+
 
 def interactive_stories():
     """Run interactive story creation."""
     log_operation_status("Interactive story session")
-    
-    from utils.model_runner import StoryModelRunner
-    
+
+    from model_runner import StoryModelRunner
+
     print("\n🎭 Starting interactive story creation...")
     print("This will:")
     print("  - Generate personalized stories")
     print("  - Support story continuation")
     print("  - Manage story history")
-    
+
     runner = StoryModelRunner()
-    
+
     if runner.users_df.empty:
         print("❌ No users found. Please run generate_users.py first.")
         input("\nPress Enter to continue...")
         return
-    
+
     if not runner.load_model():
         print("❌ Failed to load model. Please run training first.")
         input("\nPress Enter to continue...")
         return
-    
-    # Start story session without additional authentication (already authenticated)
+
     runner.story_session_authenticated()
-    
+
     input("\nPress Enter to continue...")
+
 
 def generate_users():
     """Generate users file."""
     log_operation_status("User generation")
-    
+
     from generate_users import generate_users
-    
+
     print("\n👥 Generating users file...")
     print("This will create/update users with credentials:")
     print("  - Standard users: child_1, kid_1, teen_1, adult_1, etc.")
     print("  - Admin user: admin (password: admin)")
     print("  - Preserves existing users in file")
-    
+
     generate_users()
-    
+
     input("\nPress Enter to continue...")
+
 
 def setup_directories():
     """Create required directory structure."""
-    from utils.helpers import ensure_dir_exists, load_config
-    
+    from helpers import ensure_dir_exists, load_config
+
     config = load_config()
     paths = config['paths']
-    
+
     directories = [
         paths['data_root'],
         paths['data_raw'],
@@ -295,9 +317,10 @@ def setup_directories():
         paths['users'],
         "logs"
     ]
-    
+
     for directory in directories:
         ensure_dir_exists(directory)
+
 
 def display_welcome():
     """Display welcome message and system information."""
@@ -311,24 +334,24 @@ def display_welcome():
     print("  • Interactive user sessions")
     print("=" * 60)
 
+
 def main():
     """Main entry point with authentication."""
     setup_directories()
     display_welcome()
-    
-    config_file = Path("../configs/model_config.yaml")
-    if not config_file.exists():
+
+
+    config_file = os.path.join(cwd, "configs", "model_config.yaml")
+    if not os.path.exists(config_file):
         print("\n⚠️ Configuration file not found!")
         print("Please ensure configs/model_config.yaml exists.")
         return
-    
-    # Authenticate user
+
     user_info = authenticate_user()
     if not user_info:
         print("❌ Authentication failed")
         return
-    
-    # Route based on admin status
+
     if user_info['admin']:
         print("\n🔄 ADMIN WORKFLOW:")
         print("1. Check Environment → 2. Download Data → 8. Generate Users →")
@@ -337,6 +360,7 @@ def main():
     else:
         print(f"\n🎭 Welcome to Interactive Story Creation!")
         interactive_stories()
+
 
 if __name__ == "__main__":
     main()

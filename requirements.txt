@@ -30,3 +30,4 @@ lxml>=4.9.0
 
 # Development tools
 jupyter>=1.0.0
+importlib>=1.0.4

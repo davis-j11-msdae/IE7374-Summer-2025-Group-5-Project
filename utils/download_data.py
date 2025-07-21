@@ -9,18 +9,19 @@ import sys
 import logging
 import requests
 import time
-from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from urllib.parse import urljoin
 import re
 from bs4 import BeautifulSoup
 from tqdm import tqdm
-import random
+from helpers import set_cwd
+
+# Get current working directory for path operations
+cwd = set_cwd()
 
 # Add utils to path for imports
-sys.path.append(os.path.join(os.path.dirname(__file__), '.'))
-
-from utils.helpers import ensure_dir_exists, load_config
+sys.path.append(os.path.join(cwd, 'utils'))
+from helpers import ensure_dir_exists, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,10 @@ logger = logging.getLogger(__name__)
 class ProjectGutenbergDownloader:
     """Downloads texts from Project Gutenberg based on bookshelf categories."""
 
-    def __init__(self, config_path: str = "configs/model_config.yaml"):
+    def __init__(self, config_path: str = None):
+        if config_path is None:
+            config_path = os.path.join(cwd, "configs", "model_config.yaml")
+
         self.config = load_config(config_path)
         self.data_paths = self.config['paths']
         self.gutenberg_config = self.config.get('gutenberg', {})
@@ -62,13 +66,13 @@ class ProjectGutenbergDownloader:
         categories = self.gutenberg_config.get('categories', {})
         for category_name in categories.keys():
             file_name = f"{category_name}_stories.txt"
-            file_path = Path(self.data_paths['data_raw']) / file_name
-            exists = file_path.exists() and file_path.stat().st_size > 1000  # At least 1KB
+            file_path = os.path.join(self.data_paths['data_raw'], file_name)
+            exists = os.path.exists(file_path) and os.path.getsize(file_path) > 1000
 
             status['categories'][category_name] = {
                 'exists': exists,
                 'path': file_path,
-                'size_mb': file_path.stat().st_size / (1024 * 1024) if exists else 0
+                'size_mb': os.path.getsize(file_path) / (1024 * 1024) if exists else 0
             }
 
             if exists:
@@ -77,10 +81,12 @@ class ProjectGutenbergDownloader:
                 status['missing_categories'].append(category_name)
 
         # Check Mixtral model
-        model_path = Path(self.data_paths['models']) / 'mixtral-8x7b-base'
-        if model_path.exists() and list(model_path.glob('*.json')):  # Check for config files
+        model_path = os.path.join(self.data_paths['models'], 'mixtral-8x7b-base')
+        if os.path.exists(model_path) and os.listdir(model_path):
             status['model_exists'] = True
-            model_size = sum(f.stat().st_size for f in model_path.rglob('*') if f.is_file())
+            model_size = sum(os.path.getsize(os.path.join(dirpath, filename))
+                             for dirpath, dirnames, filenames in os.walk(model_path)
+                             for filename in filenames)
             status['model_size_gb'] = model_size / (1024 ** 3)
 
         return status
@@ -148,7 +154,7 @@ class ProjectGutenbergDownloader:
         print(f"  Found {len(books)} qualifying books")
         return books
 
-    def download_book_text(self, book_id: str, output_path: Path) -> bool:
+    def download_book_text(self, book_id: str, output_path: str) -> bool:
         """Download plain text version of a book."""
         text_urls = [
             f"{self.base_url}/files/{book_id}/{book_id}-0.txt",
@@ -172,7 +178,7 @@ class ProjectGutenbergDownloader:
                 if self._validate_text_file(output_path):
                     return True
                 else:
-                    output_path.unlink()
+                    os.unlink(output_path)
             elif response.status_code == 404:
                 continue
 
@@ -207,19 +213,7 @@ class ProjectGutenbergDownloader:
             r'all rights reserved',
             r'reproduction.*prohibited',
             r'may not be.*reproduced',
-            r'permission.*required',
-            r'unauthorized.*distribution.*prohibited',
-            r'commercial.*use.*prohibited',
-            r'not.*public domain',
-            r'copyrighted.*work',
-            r'rights.*reserved',
-            r'©.*\d{4}',
-            r'copyright \d{4}',
-            r'protected.*copyright',
-            r'exclusive.*rights',
-            r'trademark.*registered',
-            r'proprietary.*rights',
-            r'restricted.*use'
+            r'permission.*required'
         ]
 
         public_domain_patterns = [
@@ -227,14 +221,7 @@ class ProjectGutenbergDownloader:
             r'not copyrighted',
             r'copyright.*expired',
             r'free.*distribution',
-            r'no copyright',
-            r'may.*freely.*distributed',
-            r'unrestricted.*use',
-            r'project gutenberg.*public domain',
-            r'gutenberg.*ebook.*public domain',
-            r'freely.*available',
-            r'copyright.*waived',
-            r'dedicated.*public domain'
+            r'no copyright'
         ]
 
         found_restrictions = []
@@ -257,24 +244,9 @@ class ProjectGutenbergDownloader:
             copyright_info['restrictions'] = found_restrictions
             copyright_info['status'] = 'copyrighted'
 
-            copyright_lines = []
-            for line in header.split('\n'):
-                line_clean = line.strip()
-                if any(term in line.lower() for term in ['copyright', '©', 'rights reserved']):
-                    copyright_lines.append(line_clean)
-
-            if copyright_lines:
-                copyright_info['copyright_notice'] = '. '.join(copyright_lines[:3])
-
-        if 'project gutenberg' in header_lower:
-            if any(term in header_lower for term in ['tm license', 'license agreement', 'terms of use']):
-                if not any(term in header_lower for term in ['may not', 'prohibited', 'unauthorized']):
-                    copyright_info['status'] = 'gutenberg_license'
-                    copyright_info['is_public_domain'] = True
-
         return copyright_info
 
-    def _validate_text_file(self, file_path: Path) -> Dict[str, Any]:
+    def _validate_text_file(self, file_path: str) -> Dict[str, Any]:
         """Validate downloaded file for text content and copyright status."""
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
@@ -302,8 +274,6 @@ class ProjectGutenbergDownloader:
 
         if not copyright_info['is_public_domain']:
             validation_result['reason'] = f"Restrictive copyright: {copyright_info['status']}"
-            if copyright_info['copyright_notice']:
-                validation_result['reason'] += f" - {copyright_info['copyright_notice'][:100]}"
             return validation_result
 
         validation_result['is_valid_text'] = True
@@ -323,9 +293,6 @@ class ProjectGutenbergDownloader:
                 "chapter i", "chapter 1", "prologue"
             ]):
                 start_idx = i + 1
-                break
-            elif line_lower.startswith("chapter") or "table of contents" in line_lower:
-                start_idx = i
                 break
 
         end_idx = len(lines)
@@ -364,8 +331,7 @@ class ProjectGutenbergDownloader:
             print(f"❌ No books found for {category_name}")
             return False
 
-        category_dir = Path(self.data_paths['data_raw']) / category_name.lower().replace(' ', '_')
-        ensure_dir_exists(category_dir)
+        category_dir = os.path.join(self.data_paths['data_raw'], category_name.lower().replace(' ', '_'))
 
         seen_books = set()
         successful_downloads = 0
@@ -390,13 +356,13 @@ class ProjectGutenbergDownloader:
                 safe_title = re.sub(r'[^\w\s-]', '', title)[:50]
                 safe_title = re.sub(r'\s+', '_', safe_title)
 
-                temp_file = category_dir / f"{book_id}_{safe_title}.txt"
+                temp_file = os.path.join(category_dir, f"{book_id}_{safe_title}.txt")
 
                 if self.download_book_text(book_id, temp_file):
                     validation_result = self._validate_text_file(temp_file)
 
                     if not validation_result['is_valid_text']:
-                        temp_file.unlink()
+                        os.unlink(temp_file)
                         pbar.update(1)
                         continue
 
@@ -406,7 +372,6 @@ class ProjectGutenbergDownloader:
                     cleaned_text = self.clean_gutenberg_text(raw_text)
 
                     if len(cleaned_text.split()) >= 1000:
-                        copyright_info = validation_result['copyright_info']
                         all_texts.append({
                             'title': title,
                             'author': author,
@@ -414,13 +379,11 @@ class ProjectGutenbergDownloader:
                             'id': book_id,
                             'downloads': book['downloads'],
                             'word_count': len(cleaned_text.split()),
-                            'copyright_status': copyright_info['status'],
-                            'is_public_domain': copyright_info['is_public_domain'],
                             'bookshelf_id': bookshelf_id
                         })
                         successful_downloads += 1
 
-                    temp_file.unlink()
+                    os.unlink(temp_file)
 
                 pbar.update(1)
                 pbar.set_postfix(downloaded=successful_downloads)
@@ -431,10 +394,10 @@ class ProjectGutenbergDownloader:
 
         all_texts.sort(key=lambda x: x['downloads'], reverse=True)
 
-        combined_file = Path(self.data_paths['data_raw']) / f"{category_name.lower().replace(' ', '_')}_stories.txt"
+        combined_file = os.path.join(self.data_paths['data_raw'],
+                                     f"{category_name.lower().replace(' ', '_')}_stories.txt")
 
         total_words = 0
-        copyright_stats = {}
 
         with open(combined_file, 'w', encoding='utf-8') as f:
             for i, book_data in enumerate(all_texts):
@@ -446,14 +409,9 @@ class ProjectGutenbergDownloader:
                 f.write(f"PROJECT_GUTENBERG_ID: {book_data['id']}\n")
                 f.write(f"DOWNLOADS: {book_data['downloads']}\n")
                 f.write(f"WORD_COUNT: {book_data['word_count']}\n")
-                f.write(f"COPYRIGHT_STATUS: {book_data['copyright_status']}\n")
-                f.write(f"PUBLIC_DOMAIN: {book_data['is_public_domain']}\n")
                 f.write(f"BOOKSHELF_ID: {book_data['bookshelf_id']}\n")
                 f.write("\n" + book_data['text'])
                 total_words += book_data['word_count']
-
-                status = book_data['copyright_status']
-                copyright_stats[status] = copyright_stats.get(status, 0) + 1
 
         print(f"✅ {category_name}: {successful_downloads} books, {total_words:,} words")
         return True
@@ -533,22 +491,6 @@ class ProjectGutenbergDownloader:
 
         return success_count == len(missing_categories)
 
-    def download_all_categories(self) -> bool:
-        """Download all configured categories (overwriting existing)."""
-        categories = self.gutenberg_config.get('categories', {})
-        min_downloads = self.gutenberg_config.get('min_downloads', 1000)
-
-        success_count = 0
-        total_count = len(categories)
-
-        for category_name, config in categories.items():
-            bookshelf_id = config['bookshelf_id']
-
-            if self.download_category_books(category_name, bookshelf_id, min_downloads):
-                success_count += 1
-
-        return success_count == total_count
-
 
 def display_status(status: Dict[str, Any]):
     """Display current download status."""
@@ -587,7 +529,6 @@ def main():
     downloader = ProjectGutenbergDownloader()
 
     while True:
-        # Check current status
         status = downloader.check_existing_data()
         display_status(status)
 
@@ -603,7 +544,6 @@ def main():
         if choice == "1":
             print("\n🔄 Downloading missing data and models...")
 
-            # Download missing categories
             if status['missing_categories']:
                 print(f"📚 Missing categories: {', '.join(status['missing_categories'])}")
                 categories_success = downloader.download_missing_categories(status['missing_categories'])
@@ -611,7 +551,6 @@ def main():
                 print("✅ All categories exist")
                 categories_success = True
 
-            # Download model if missing
             if not status['model_exists']:
                 print("🤖 Missing model, downloading...")
                 model_success = downloader.download_mixtral_model()
@@ -638,8 +577,15 @@ def main():
 
             confirm = input("\nThis will overwrite existing data. Continue? (y/N): ").strip().lower()
             if confirm == 'y':
-                success = downloader.download_all_categories()
-                if success:
+                min_downloads = downloader.gutenberg_config.get('min_downloads', 1000)
+                success_count = 0
+
+                for category_name, config in categories.items():
+                    bookshelf_id = config['bookshelf_id']
+                    if downloader.download_category_books(category_name, bookshelf_id, min_downloads):
+                        success_count += 1
+
+                if success_count == len(categories):
                     print("\n✅ All categories downloaded successfully!")
                 else:
                     print("\n❌ Some category downloads failed")
@@ -649,14 +595,13 @@ def main():
         elif choice == "3":
             print("\n🔄 Force downloading Mixtral model...")
 
-            model_path = Path(downloader.data_paths['models']) / 'mixtral-8x7b-base'
-            if model_path.exists():
+            model_path = os.path.join(downloader.data_paths['models'], 'mixtral-8x7b-base')
+            if os.path.exists(model_path):
                 confirm = input("Model exists. Overwrite? (y/N): ").strip().lower()
                 if confirm != 'y':
                     print("Cancelled")
                     continue
 
-                # Remove existing model
                 import shutil
                 shutil.rmtree(model_path)
                 print("  🗑️ Removed existing model")
