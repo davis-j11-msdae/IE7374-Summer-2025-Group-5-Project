@@ -38,7 +38,8 @@ def load_base_model_and_tokenizer():
         model_path,
         torch_dtype=torch.float16,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        loss_type="ForCausalMLoss"  # Add this line to fix the warning
     )
 
     return model, tokenizer

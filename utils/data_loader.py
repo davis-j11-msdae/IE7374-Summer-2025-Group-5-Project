@@ -1,9 +1,8 @@
 import pandas as pd
-import numpy as np
 import os
 import sys
-from typing import Dict, List, Any
 import re
+import textstat
 from helpers import set_cwd
 
 # Get current working directory for path operations
@@ -17,8 +16,11 @@ from helpers import (
 )
 from eval import load_evaluation_models, evaluate_stories_list, filter_safe_stories
 
+# Add this line for debugging (#3):
+DEBUG_SINGLE_STORY = False  # Set to True to process only 1 story for debugging
 
-def load_gutenberg_text_files() -> Dict[str, str]:
+
+def load_gutenberg_text_files() -> dict[str, str]:
     """Load Project Gutenberg text files from data/raw directory."""
     config = load_config()
     raw_data_path = config['paths']['data_raw']
@@ -42,7 +44,7 @@ def load_gutenberg_text_files() -> Dict[str, str]:
     return text_data
 
 
-def extract_books_from_gutenberg_file(text: str, category_name: str) -> List[Dict[str, Any]]:
+def extract_books_from_gutenberg_file(text: str, category_name: str) -> list[dict[str, any]]:
     """Extract individual books from Project Gutenberg combined file."""
     books = []
     book_sections = text.split("=" * 80)
@@ -90,7 +92,7 @@ def extract_books_from_gutenberg_file(text: str, category_name: str) -> List[Dic
     return books
 
 
-def extract_stories_from_books(books: List[Dict[str, Any]]) -> List[str]:
+def extract_stories_from_books(books: list[dict[str, any]]) -> list[str]:
     """Extract story segments from books for training."""
     config = load_config()
     min_length = config['data']['min_story_length']
@@ -125,88 +127,53 @@ def extract_stories_from_books(books: List[Dict[str, Any]]) -> List[str]:
     return stories
 
 
-def split_short_story_collection(text: str) -> List[str]:
+def split_short_story_collection(text: str) -> list[str]:
     """Split short story collections into individual stories."""
-    contents_match = re.search(r'^\s*(?:contents?|table\s+of\s+contents?)\s*', text, re.IGNORECASE | re.MULTILINE)
-    if not contents_match:
-        return [text]
+    contents_match = re.search(r'^\s*(?:contents?|table\s+of\s+contents?)', text, re.IGNORECASE | re.MULTILINE)
 
-    contents_start = contents_match.end()
-    contents_end = contents_start + min(2000, len(text) - contents_start)
-    contents_section = text[contents_start:contents_end]
+    if contents_match:
+        text = text[contents_match.end():]
 
-    story_titles = []
-    for line in contents_section.split('\n'):
-        line = line.strip()
-        if (len(line) > 3 and len(line) < 100 and
-                not any(skip in line.lower() for skip in ['page', 'chapter', 'part', 'contents']) and
-                (line.isupper() or re.match(r'^[IVX]+\.\s+', line) or re.match(r'^\d+\.\s+', line))):
-            title = re.sub(r'^\s*(?:[IVX]+\.?|[0-9]+\.?)\s*', '', line)
-            title = re.sub(r'\s*\.+\s*\d+\s*', '', title)
-            if len(title) > 3:
-                story_titles.append(title.strip())
-
-            if len(story_titles) < 2:
-                return [text]
+    story_patterns = [
+        r'\n\n([A-Z][A-Z\s]+)\n\n',
+        r'\n\n(\d+\.?\s+[A-Z][^\n]+)\n\n',
+        r'\n\n([IVXLC]+\.?\s+[A-Z][^\n]+)\n\n'
+    ]
 
     stories = []
-    text_lines = text.split('\n')
+    for pattern in story_patterns:
+        matches = list(re.finditer(pattern, text))
+        if len(matches) > 1:
+            for i, match in enumerate(matches):
+                start = match.start()
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+                story = text[start:end].strip()
+                if len(story) > 500:
+                    stories.append(story)
+            break
 
-    title_positions = []
-    for title in story_titles[:10]:
-        for i, line in enumerate(text_lines):
-            if title.lower() in line.lower() and abs(len(line.strip()) - len(title)) < 20:
-                title_positions.append(i)
-                break
-
-    title_positions.sort()
-
-    for i, start_pos in enumerate(title_positions):
-        end_pos = title_positions[i + 1] if i + 1 < len(title_positions) else len(text_lines)
-        story_lines = text_lines[start_pos + 1:end_pos]
-
-        while story_lines and (not story_lines[0].strip() or re.match(r'^[-=_*]{3,}', story_lines[0].strip())):
-                story_lines.pop(0)
-
-        story_text = '\n'.join(story_lines).strip()
-        if story_text and len(story_text.split()) >= 100:
-            stories.append(story_text)
-
-    return stories if stories else [text]
+    return stories if len(stories) > 1 else [text]
 
 
-def extract_chapters(text: str) -> List[str]:
-    """Extract chapters from book text."""
+def extract_chapters(text: str) -> list[str]:
+    """Extract chapters from a book."""
     chapter_patterns = [
-        r'\n\s*CHAPTER\s+[IVXLCDM\d]+[^\n]*\n',
-        r'\n\s*Chapter\s+\d+[^\n]*\n',
-        r'\n\s*\d+\.\s*[A-Z][^\n]*\n'
+        r'\n\s*CHAPTER\s+[IVXLC\d]+[^\n]*\n',
+        r'\n\s*Chapter\s+[IVXLC\d]+[^\n]*\n',
+        r'\n\s*[IVXLC]+\.\s*[^\n]*\n',
+        r'\n\s*\d+\.\s*[^\n]*\n'
     ]
 
     for pattern in chapter_patterns:
-        splits = re.split(pattern, text, flags=re.IGNORECASE)
-        if len(splits) > 2:
-            chapter_markers = re.findall(pattern, text, flags=re.IGNORECASE)
-            chapters = []
-
-            for i, split in enumerate(splits[1:]):
-                if i < len(chapter_markers):
-                    chapter_text = chapter_markers[i] + split
-                else:
-                    chapter_text = split
-
-                chapter_text = chapter_text.strip()
-                if len(chapter_text) > 500:
-                    chapters.append(chapter_text)
-
-            if chapters:
-                return chapters
+        chapters = re.split(pattern, text)
+        if len(chapters) > 2:
+            return [chapter.strip() for chapter in chapters[1:] if len(chapter.strip()) > 200]
 
     return [text]
 
 
-def extract_paragraph_chunks(text: str, min_length: int, max_length: int) -> List[str]:
-    """Extract chunks based on paragraph boundaries."""
+def extract_paragraph_chunks(text: str, min_length: int, max_length: int) -> list[str]:
+    """Extract paragraph-based chunks from text."""
     paragraphs = text.split('\n\n')
     chunks = []
     current_chunk = ""
@@ -231,27 +198,36 @@ def extract_paragraph_chunks(text: str, min_length: int, max_length: int) -> Lis
     return chunks
 
 
-def assign_age_groups(stories: List[str], category_name: str) -> List[Dict[str, Any]]:
-    """Assign age groups to stories based on Gutenberg category."""
-    config = load_config()
-    gutenberg_config = config['gutenberg']['categories']
-    target_age_groups = gutenberg_config.get(category_name, {}).get('target_age_groups', ['adult'])
-
+def assign_age_groups_by_reading_level(stories: list[str], category_name: str) -> list[dict[str, any]]:
+    """Assign age groups to stories based on Flesch-Kincaid reading level analysis."""
     story_data = []
     for story in stories:
-        age_group = np.random.choice(target_age_groups)
+        # Calculate Flesch-Kincaid grade level
+        reading_level = textstat.flesch_kincaid_grade(story)
+
+        # Determine age group based on reading level
+        if reading_level <= 5.9:
+            age_group = 'child'
+        elif reading_level <= 12.9:
+            age_group = 'kid'
+        elif reading_level <= 17.9:
+            age_group = 'teen'
+        else:
+            age_group = 'adult'
+
         story_data.append({
             'text': story,
             'age_group': age_group,
             'source': category_name,
             'length': len(story),
-            'word_count': len(story.split())
+            'word_count': len(story.split()),
+            'reading_level': reading_level
         })
 
     return story_data
 
 
-def create_age_grouped_datasets(all_stories: List[Dict[str, Any]]) -> Dict[str, pd.DataFrame]:
+def create_age_grouped_datasets(all_stories: list[dict[str, any]]) -> dict[str, pd.DataFrame]:
     """Create separate datasets for each age group."""
     age_groups = ['child', 'kid', 'teen', 'adult']
     datasets = {}
@@ -263,7 +239,7 @@ def create_age_grouped_datasets(all_stories: List[Dict[str, Any]]) -> Dict[str, 
     return datasets
 
 
-def evaluate_and_filter_stories(datasets: Dict[str, pd.DataFrame], config: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
+def evaluate_and_filter_stories(datasets: dict[str, pd.DataFrame], config: dict[str, any]) -> dict[str, pd.DataFrame]:
     """Evaluate stories and filter out inappropriate content."""
     log_operation_status("Loading evaluation models")
     models = load_evaluation_models()
@@ -289,7 +265,17 @@ def evaluate_and_filter_stories(datasets: Dict[str, pd.DataFrame], config: Dict[
         safe_df = df.iloc[safe_indices].reset_index(drop=True)
         safe_eval_df = eval_df.iloc[safe_indices].reset_index(drop=True)
 
-        combined_df = pd.concat([safe_df, safe_eval_df], axis=1)
+        # Fix duplicate column names by removing duplicates before concatenation
+        if not safe_df.empty and not safe_eval_df.empty:
+            # Remove any overlapping columns from eval_df
+            overlapping_cols = [col for col in safe_eval_df.columns if col in safe_df.columns]
+            if overlapping_cols:
+                safe_eval_df = safe_eval_df.drop(columns=overlapping_cols)
+
+            combined_df = pd.concat([safe_df, safe_eval_df], axis=1)
+        else:
+            combined_df = safe_df if not safe_df.empty else pd.DataFrame()
+
         filtered_datasets[age_group] = combined_df
 
         removed_count = len(df) - len(safe_df)
@@ -298,7 +284,7 @@ def evaluate_and_filter_stories(datasets: Dict[str, pd.DataFrame], config: Dict[
     return filtered_datasets
 
 
-def save_processed_datasets(datasets: Dict[str, pd.DataFrame]) -> None:
+def save_processed_datasets(datasets: dict[str, pd.DataFrame]) -> None:
     """Save processed datasets to data/processed directory."""
     config = load_config()
     processed_path = config['paths']['data_processed']
@@ -319,7 +305,7 @@ def save_processed_datasets(datasets: Dict[str, pd.DataFrame]) -> None:
         print(f"  ✅ Saved combined: {len(combined_df)} stories")
 
 
-def load_processed_datasets() -> Dict[str, pd.DataFrame]:
+def load_processed_datasets() -> dict[str, pd.DataFrame]:
     """Load processed datasets from data/processed directory."""
     config = load_config()
     processed_path = config['paths']['data_processed']
@@ -334,106 +320,7 @@ def load_processed_datasets() -> Dict[str, pd.DataFrame]:
     return datasets
 
 
-def process_gutenberg_data() -> Dict[str, pd.DataFrame]:
-    """Main data processing pipeline for Project Gutenberg data."""
-    config = load_config()
-    processed_path = config['paths']['data_processed']
-
-    if os.path.exists(processed_path) and not check_cache_overwrite(processed_path, "Processed datasets"):
-        return load_processed_datasets()
-
-    log_operation_status("Gutenberg data processing")
-
-    raw_texts = load_gutenberg_text_files()
-    if not raw_texts:
-        print("❌ No Gutenberg data found. Please run download_data.py first.")
-        return {}
-
-    all_stories = []
-
-    for category_name, text_content in raw_texts.items():
-        log_operation_status(f"Processing {category_name}")
-
-        books = extract_books_from_gutenberg_file(text_content, category_name)
-        print(f"  📚 Extracted {len(books)} books")
-
-        if not books:
-            print(f"  ⚠️ No books found in {category_name}")
-            continue
-
-        stories = extract_stories_from_books(books)
-        print(f"  📖 Extracted {len(stories)} story segments")
-
-        if not stories:
-            print(f"  ⚠️ No story segments extracted from {category_name}")
-            continue
-
-        story_data = assign_age_groups(stories, category_name)
-        all_stories.extend(story_data)
-
-        category_word_count = sum(len(story.split()) for story in stories)
-        avg_story_length = category_word_count / len(stories) if stories else 0
-
-        print(f"  📊 {category_name} stats:")
-        print(f"    Total stories: {len(stories)}")
-        print(f"    Total words: {category_word_count:,}")
-        print(f"    Avg story length: {avg_story_length:.0f} words")
-
-    print(f"\n📊 Total stories extracted: {len(all_stories)}")
-
-    if not all_stories:
-        print("❌ No stories were extracted from any category")
-        return {}
-
-    datasets = create_age_grouped_datasets(all_stories)
-
-    print("\n📈 Pre-evaluation age group distribution:")
-    total_stories = 0
-    for age_group, df in datasets.items():
-        count = len(df)
-        total_stories += count
-        if count > 0:
-            avg_length = df['length'].mean()
-            print(f"  {age_group}: {count} stories (avg {avg_length:.0f} chars)")
-        else:
-            print(f"  {age_group}: 0 stories")
-
-    print(f"\n🔍 Evaluating and filtering {total_stories} stories...")
-
-    filtered_datasets = evaluate_and_filter_stories(datasets, config)
-
-    print("\n📈 Post-evaluation age group distribution:")
-    filtered_total = 0
-    for age_group, df in filtered_datasets.items():
-        count = len(df)
-        filtered_total += count
-        if count > 0:
-            avg_length = df['length'].mean()
-            avg_grammar = df['grammar_score'].mean() if 'grammar_score' in df.columns else 0
-            avg_coherence = df['coherence_score'].mean() if 'coherence_score' in df.columns else 0
-            print(
-                f"  {age_group}: {count} stories (avg {avg_length:.0f} chars, grammar {avg_grammar:.1f}, coherence {avg_coherence:.1f})")
-        else:
-            print(f"  {age_group}: 0 stories")
-
-    print(f"\n🎯 Filtered stories: {filtered_total} (removed {total_stories - filtered_total})")
-
-    if filtered_total > 0:
-        combined_df = pd.concat([df for df in filtered_datasets.values() if not df.empty], ignore_index=True)
-        source_counts = combined_df['source'].value_counts()
-
-        print(f"\n📚 Source distribution:")
-        for source, count in source_counts.items():
-            percentage = (count / filtered_total) * 100
-            print(f"  {source}: {count} stories ({percentage:.1f}%)")
-
-    save_processed_datasets(filtered_datasets)
-
-    log_operation_status("Gutenberg data processing", "completed")
-    return filtered_datasets
-
-
-def validate_processed_data(datasets: Dict[str, pd.DataFrame]) -> bool:
+def validate_processed_data(datasets: dict[str, pd.DataFrame]) -> bool:
     """Validate that processed data meets requirements."""
     config = load_config()
     min_length = config['data']['min_story_length']
@@ -448,18 +335,31 @@ def validate_processed_data(datasets: Dict[str, pd.DataFrame]) -> bool:
             all_valid = False
             continue
 
-        length_violations = df[(df['length'] < min_length) | (df['length'] > max_length)]
+        # Fix duplicate column issue by removing duplicates before validation
+        if df.columns.duplicated().any():
+            print(f"  🔧 {age_group}: Removing duplicate columns")
+            df = df.loc[:, ~df.columns.duplicated()]
+            datasets[age_group] = df
 
-        if len(length_violations) > 0:
-            print(f"  ❌ {age_group}: {len(length_violations)} stories violate length constraints")
-            all_valid = False
-            continue
-
+        # Check if required columns exist
         required_cols = ['text', 'age_group', 'source', 'length', 'word_count']
         missing_cols = [col for col in required_cols if col not in df.columns]
 
         if missing_cols:
             print(f"  ❌ {age_group}: Missing columns: {missing_cols}")
+            all_valid = False
+            continue
+
+        # Validate length constraints
+        try:
+            length_violations = df[(df['length'] < min_length) | (df['length'] > max_length)]
+
+            if len(length_violations) > 0:
+                print(f"  ❌ {age_group}: {len(length_violations)} stories violate length constraints")
+                all_valid = False
+                continue
+        except Exception as e:
+            print(f"  ❌ {age_group}: Error validating length constraints: {e}")
             all_valid = False
             continue
 
@@ -475,7 +375,7 @@ def validate_processed_data(datasets: Dict[str, pd.DataFrame]) -> bool:
     return all_valid
 
 
-def get_dataset_statistics(datasets: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+def get_dataset_statistics(datasets: dict[str, pd.DataFrame]) -> dict[str, any]:
     """Generate statistics about processed datasets."""
     stats = {}
 
@@ -512,6 +412,145 @@ def get_dataset_statistics(datasets: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
             }
 
     return stats
+
+
+def process_gutenberg_data() -> dict[str, pd.DataFrame]:
+    """Main data processing pipeline for Project Gutenberg data."""
+    config = load_config()
+    processed_path = config['paths']['data_processed']
+
+    if os.path.exists(processed_path) and not check_cache_overwrite(processed_path, "Processed datasets"):
+        return load_processed_datasets()
+
+    log_operation_status("Gutenberg data processing")
+
+    raw_texts = load_gutenberg_text_files()
+    if not raw_texts:
+        print("❌ No Gutenberg data found. Please run download_data.py first.")
+        return {}
+
+    all_stories = []
+
+    for category_name, text_content in raw_texts.items():
+        log_operation_status(f"Processing {category_name}")
+
+        books = extract_books_from_gutenberg_file(text_content, category_name)
+        print(f"  📚 Extracted {len(books)} books")
+
+        if not books:
+            print(f"  ⚠️ No books found in {category_name}")
+            continue
+
+        stories = extract_stories_from_books(books)
+        print(f"  📖 Extracted {len(stories)} story segments")
+
+        if not stories:
+            print(f"  ⚠️ No story segments extracted from {category_name}")
+            continue
+
+        # Apply debugging filter if enabled
+        if DEBUG_SINGLE_STORY:
+            stories = stories[:1]
+            print(f"  🐛 DEBUG: Processing only 1 story")
+
+        # Use Flesch-Kincaid reading level for age group assignment
+        story_data = assign_age_groups_by_reading_level(stories, category_name)
+        all_stories.extend(story_data)
+
+        category_word_count = sum(len(story.split()) for story in stories)
+        avg_story_length = category_word_count / len(stories) if stories else 0
+
+        print(f"  📊 {category_name} stats:")
+        print(f"    Total stories: {len(stories)}")
+        print(f"    Total words: {category_word_count:,}")
+        print(f"    Avg story length: {avg_story_length:.0f} words")
+
+    print(f"\n📊 Total stories extracted: {len(all_stories)}")
+
+    if not all_stories:
+        print("❌ No stories were extracted from any category")
+        return {}
+
+    datasets = create_age_grouped_datasets(all_stories)
+
+    print("\n📈 Pre-evaluation age group distribution:")
+    total_stories = 0
+    for age_group, df in datasets.items():
+        count = len(df)
+        total_stories += count
+        if count > 0 and not df.empty:
+            try:
+                avg_length = df['length'].mean()
+                avg_reading_level = df['reading_level'].mean() if 'reading_level' in df.columns else 0
+                print(
+                    f"  {age_group}: {count} stories (avg {avg_length:.0f} chars, reading level {avg_reading_level:.1f})")
+            except Exception as e:
+                print(f"  {age_group}: {count} stories (error calculating stats: {e})")
+        else:
+            print(f"  {age_group}: 0 stories")
+
+    print(f"\n🔍 Evaluating and filtering {total_stories} stories...")
+
+    if total_stories == 0:
+        print("❌ No stories to evaluate. Check data extraction process.")
+        return {}
+
+    filtered_datasets = evaluate_and_filter_stories(datasets, config)
+
+    print("\n📈 Post-evaluation age group distribution:")
+    filtered_total = 0
+    for age_group, df in filtered_datasets.items():
+        count = len(df)
+        filtered_total += count
+
+        if count > 0 and not df.empty and 'length' in df.columns:
+            try:
+                # Robust mean calculation
+                length_mean = df['length'].mean()
+                avg_length = float(length_mean) if hasattr(length_mean, '__float__') else (
+                    length_mean.iloc[0] if hasattr(length_mean, 'iloc') and len(length_mean) > 0 else 0
+                )
+
+                avg_grammar = 0
+                avg_coherence = 0
+
+                if 'grammar_score' in df.columns:
+                    grammar_mean = df['grammar_score'].mean()
+                    avg_grammar = float(grammar_mean) if hasattr(grammar_mean, '__float__') else (
+                        grammar_mean.iloc[0] if hasattr(grammar_mean, 'iloc') and len(grammar_mean) > 0 else 0
+                    )
+
+                if 'coherence_score' in df.columns:
+                    coherence_mean = df['coherence_score'].mean()
+                    avg_coherence = float(coherence_mean) if hasattr(coherence_mean, '__float__') else (
+                        coherence_mean.iloc[0] if hasattr(coherence_mean, 'iloc') and len(coherence_mean) > 0 else 0
+                    )
+
+                print(
+                    f"  {age_group}: {count} stories (avg {avg_length:.0f} chars, grammar {avg_grammar:.1f}, coherence {avg_coherence:.1f})")
+            except Exception as e:
+                print(f"  {age_group}: {count} stories (ERROR calculating stats: {e})")
+        else:
+            print(f"  {age_group}: 0 stories")
+
+    print(f"\n🎯 Filtered stories: {filtered_total} (removed {total_stories - filtered_total})")
+
+    if filtered_total > 0:
+        # Remove any empty DataFrames before concatenation
+        non_empty_dfs = [df for df in filtered_datasets.values() if not df.empty]
+        if non_empty_dfs:
+            combined_df = pd.concat(non_empty_dfs, ignore_index=True)
+            source_counts = combined_df['source'].value_counts()
+
+            print(f"\n📚 Source distribution:")
+            for source, count in source_counts.items():
+                percentage = (count / filtered_total) * 100
+                print(f"  {source}: {count} stories ({percentage:.1f}%)")
+
+    save_processed_datasets(filtered_datasets)
+
+    log_operation_status("Gutenberg data processing", "completed")
+    return filtered_datasets
 
 
 def main():
