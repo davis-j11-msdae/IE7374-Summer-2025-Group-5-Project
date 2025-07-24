@@ -185,6 +185,36 @@ def tokenize_data():
     input("\nPress Enter to continue...")
 
 
+def train_model():
+    """Train the storytelling model."""
+    log_operation_status("Model training")
+
+    print("\n🚀 Training storytelling model...")
+    print("This will:")
+    print("  - Load Mixtral 8x7B base model")
+    print("  - Run hyperparameter tuning (if enabled)")
+    print("  - Fine-tune on processed story datasets")
+    print("  - Use DeepSpeed for memory optimization")
+    print("  - Save fine-tuned model")
+    print("\nNote: Requires significant GPU memory and time (3-5 hours)")
+
+    confirm = input("\nProceed with training? (y/N): ").strip().lower()
+    if confirm == 'y':
+        try:
+            # Import and run the training script directly
+            sys.path.insert(0, cwd)
+            import train
+            train.main()
+        except Exception as e:
+            print(f"❌ Training failed: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print("Training cancelled.")
+
+    input("\nPress Enter to continue...")
+
+
 def evaluate_data():
     """Manually evaluate processed datasets."""
     log_operation_status("Manual data evaluation")
@@ -205,29 +235,6 @@ def evaluate_data():
         eval_main()
     else:
         print("Manual evaluation cancelled.")
-
-    input("\nPress Enter to continue...")
-
-
-def train_model():
-    """Train the storytelling model."""
-    log_operation_status("Model training")
-
-    from train import main as train_main
-
-    print("\n🚀 Training storytelling model...")
-    print("This will:")
-    print("  - Load Mixtral 8x7B base model")
-    print("  - Fine-tune on processed story datasets")
-    print("  - Use DeepSpeed for memory optimization")
-    print("  - Save fine-tuned model")
-    print("\nNote: Requires significant GPU memory and time (1-3 hours)")
-
-    confirm = input("\nProceed with training? (y/N): ").strip().lower()
-    if confirm == 'y':
-        train_main()
-    else:
-        print("Training cancelled.")
 
     input("\nPress Enter to continue...")
 

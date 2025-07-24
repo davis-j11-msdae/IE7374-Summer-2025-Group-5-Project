@@ -7,6 +7,7 @@ from datasets import Dataset, DatasetDict
 from sklearn.model_selection import train_test_split
 from typing import Dict, List, Any
 from helpers import set_cwd
+from collections import defaultdict
 
 # Get current working directory for path operations
 cwd = set_cwd()
@@ -54,8 +55,8 @@ def load_processed_datasets() -> Dict[str, pd.DataFrame]:
     return datasets
 
 
-def format_training_examples(stories_df: pd.DataFrame, age_group: str) -> List[str]:
-    """Format stories as training examples with age-appropriate instructions."""
+def format_training_examples_with_metadata(stories_df: pd.DataFrame, age_group: str) -> List[Dict[str, Any]]:
+    """Format stories as training examples with age-appropriate instructions and preserve metadata."""
     age_instructions = {
         'child': "Write a simple story for young children with easy words and short sentences.",
         'kid': "Write an engaging story for children with age-appropriate vocabulary.",
@@ -68,19 +69,29 @@ def format_training_examples(stories_df: pd.DataFrame, age_group: str) -> List[s
 
     for _, row in stories_df.iterrows():
         story = row['text']
-        formatted_example = f"{instruction}\n\nStory: {story}"
-        examples.append(formatted_example)
+        formatted_text = f"{instruction}\n\nStory: {story}"
+        
+        # Preserve metadata for stratification
+        example = {
+            'text': formatted_text,
+            'source': row.get('source', 'unknown'),
+            'age_group': age_group,
+            'length': len(story),
+            'word_count': len(story.split())
+        }
+        
+        examples.append(example)
 
     return examples
 
 
-def tokenize_examples(examples: List[str], tokenizer: AutoTokenizer, max_length: int) -> List[Dict[str, Any]]:
-    """Tokenize training examples."""
+def tokenize_examples_with_metadata(examples: List[Dict[str, Any]], tokenizer: AutoTokenizer, max_length: int) -> List[Dict[str, Any]]:
+    """Tokenize training examples while preserving metadata."""
     tokenized_examples = []
 
     for example in create_progress_bar(examples, "Tokenizing"):
         tokens = tokenizer(
-            example,
+            example['text'],
             truncation=True,
             padding='max_length',
             max_length=max_length,
@@ -89,34 +100,71 @@ def tokenize_examples(examples: List[str], tokenizer: AutoTokenizer, max_length:
 
         tokenized_example = {
             'input_ids': tokens['input_ids'][0].tolist(),
-            'attention_mask': tokens['attention_mask'][0].tolist()
+            'attention_mask': tokens['attention_mask'][0].tolist(),
+            'source': example['source'],
+            'age_group': example['age_group'],
+            'length': example['length'],
+            'word_count': example['word_count']
         }
 
         tokenized_example['labels'] = tokenized_example['input_ids'].copy()
-
         tokenized_examples.append(tokenized_example)
 
     return tokenized_examples
 
 
-def create_dataset_splits(tokenized_data: List[Dict[str, Any]], config: Dict[str, Any]) -> DatasetDict:
-    """Create train/validation/test splits."""
+def create_stratified_dataset_splits(tokenized_data: List[Dict[str, Any]], config: Dict[str, Any]) -> DatasetDict:
+    """Create stratified train/validation/test splits preserving source and age_group distribution."""
+    from collections import defaultdict
+    import random
+    
+    # Group examples by strata (source, age_group)
+    strata_groups = defaultdict(list)
+    for i, example in enumerate(tokenized_data):
+        stratum = (example['source'], example['age_group'])
+        strata_groups[stratum].append(i)
+    
+    print(f"\nStratified split creation:")
+    print(f"Found {len(strata_groups)} strata:")
+    for stratum, indices in strata_groups.items():
+        source, age_group = stratum
+        print(f"  {source} | {age_group}: {len(indices)} examples")
+    
     train_split = config['data']['train_split']
     val_split = config['data']['val_split']
     test_split = config['data']['test_split']
-
-    train_val_data, test_data = train_test_split(
-        tokenized_data,
-        test_size=test_split,
-        random_state=42
-    )
-
-    val_ratio = val_split / (train_split + val_split)
-    train_data, val_data = train_test_split(
-        train_val_data,
-        test_size=val_ratio,
-        random_state=42
-    )
+    
+    train_indices = []
+    val_indices = []
+    test_indices = []
+    
+    # Split each stratum proportionally
+    random.seed(42)  # For reproducibility
+    
+    for stratum, indices in strata_groups.items():
+        random.shuffle(indices)
+        n_examples = len(indices)
+        
+        n_test = max(1, int(n_examples * test_split))
+        n_val = max(1, int(n_examples * val_split))
+        n_train = n_examples - n_test - n_val
+        
+        test_indices.extend(indices[:n_test])
+        val_indices.extend(indices[n_test:n_test + n_val])
+        train_indices.extend(indices[n_test + n_val:])
+        
+        source, age_group = stratum
+        print(f"  {source} | {age_group}: train={n_train}, val={n_val}, test={n_test}")
+    
+    # Create datasets from indices
+    train_data = [tokenized_data[i] for i in train_indices]
+    val_data = [tokenized_data[i] for i in val_indices]
+    test_data = [tokenized_data[i] for i in test_indices]
+    
+    print(f"\nFinal split sizes:")
+    print(f"  Train: {len(train_data)} examples")
+    print(f"  Validation: {len(val_data)} examples")
+    print(f"  Test: {len(test_data)} examples")
 
     dataset_dict = DatasetDict({
         'train': Dataset.from_list(train_data),
@@ -152,17 +200,37 @@ def load_tokenized_datasets() -> DatasetDict:
         return None
 
 
+def verify_stratification(datasets: DatasetDict) -> None:
+    """Verify that stratification was preserved in the datasets."""
+    print("\n🔍 Verifying stratification preservation:")
+    
+    for split_name, dataset in datasets.items():
+        print(f"\n{split_name.upper()} SET:")
+        strata_counts = defaultdict(int)
+        
+        for example in dataset:
+            source = example.get('source', 'unknown')
+            age_group = example.get('age_group', 'unknown')
+            strata_counts[(source, age_group)] += 1
+        
+        total = len(dataset)
+        for (source, age_group), count in sorted(strata_counts.items()):
+            percentage = (count / total) * 100
+            print(f"  {source:25} | {age_group:8} | {count:6} ({percentage:5.1f}%)")
+
+
 def tokenize_all_datasets() -> DatasetDict:
-    """Main tokenization pipeline."""
+    """Main tokenization pipeline with metadata preservation."""
     config = load_config()
     tokenized_path = config['paths']['data_tokenized']
 
     if os.path.exists(tokenized_path) and not check_cache_overwrite(tokenized_path, "Tokenized datasets"):
         existing_datasets = load_tokenized_datasets()
         if existing_datasets:
+            verify_stratification(existing_datasets)
             return existing_datasets
 
-    log_operation_status("Dataset tokenization")
+    log_operation_status("Dataset tokenization with metadata preservation")
 
     tokenizer = load_tokenizer()
     print(f"  ✅ Loaded tokenizer: {tokenizer.__class__.__name__}")
@@ -178,22 +246,45 @@ def tokenize_all_datasets() -> DatasetDict:
     for age_group, df in datasets.items():
         if not df.empty:
             log_operation_status(f"Processing {age_group} stories")
-            examples = format_training_examples(df, age_group)
+            
+            # Check required columns
+            required_columns = ['text', 'source']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                print(f"  ⚠️ Missing columns in {age_group}: {missing_columns}")
+                print(f"  Available columns: {list(df.columns)}")
+                # Fill missing source column if needed
+                if 'source' not in df.columns:
+                    df['source'] = 'unknown'
+            
+            examples = format_training_examples_with_metadata(df, age_group)
             all_examples.extend(examples)
             print(f"  ✅ Formatted {len(examples)} {age_group} examples")
 
     print(f"\n📊 Total training examples: {len(all_examples)}")
 
-    log_operation_status("Tokenizing examples")
+    # Show stratification before tokenization
+    print(f"\n📊 Pre-tokenization stratification:")
+    strata_counts = defaultdict(int)
+    for example in all_examples:
+        source = example['source']
+        age_group = example['age_group']
+        strata_counts[(source, age_group)] += 1
+    
+    total = len(all_examples)
+    for (source, age_group), count in sorted(strata_counts.items()):
+        percentage = (count / total) * 100
+        print(f"  {source:25} | {age_group:8} | {count:6} ({percentage:5.1f}%)")
+
+    log_operation_status("Tokenizing examples with metadata")
     max_length = config['data']['max_sequence_length']
-    tokenized_data = tokenize_examples(all_examples, tokenizer, max_length)
+    tokenized_data = tokenize_examples_with_metadata(all_examples, tokenizer, max_length)
 
-    log_operation_status("Creating dataset splits")
-    dataset_splits = create_dataset_splits(tokenized_data, config)
+    log_operation_status("Creating stratified dataset splits")
+    dataset_splits = create_stratified_dataset_splits(tokenized_data, config)
 
-    print("\n📈 Dataset splits:")
-    for split, dataset in dataset_splits.items():
-        print(f"  {split}: {len(dataset):,} examples")
+    # Verify stratification in final splits
+    verify_stratification(dataset_splits)
 
     save_tokenized_datasets(dataset_splits, tokenizer)
 
@@ -224,12 +315,22 @@ def get_tokenization_statistics(datasets: DatasetDict) -> Dict[str, Any]:
             'min_length': min(sample_lengths)
         }
 
+    # Stratification statistics
+    stats['stratification'] = {}
+    for split_name, dataset in datasets.items():
+        strata_counts = defaultdict(int)
+        for example in dataset:
+            source = example.get('source', 'unknown')
+            age_group = example.get('age_group', 'unknown')
+            strata_counts[(source, age_group)] += 1
+        stats['stratification'][split_name] = dict(strata_counts)
+
     return stats
 
 
 def main():
     """Main function for tokenization."""
-    log_operation_status("Data tokenization")
+    log_operation_status("Data tokenization with stratification")
 
     datasets = tokenize_all_datasets()
 
@@ -249,6 +350,16 @@ def main():
             print(f"\nToken length statistics:")
             print(f"  Average: {token_stats['avg_length']:.1f}")
             print(f"  Range: {token_stats['min_length']}-{token_stats['max_length']}")
+
+        print(f"\nStratification verification:")
+        for split_name, strata in stats['stratification'].items():
+            print(f"\n{split_name}:")
+            total_split = sum(strata.values())
+            for (source, age_group), count in sorted(strata.items()):
+                if isinstance(source, tuple):  # Handle if source is stored as tuple
+                    source, age_group = source
+                percentage = (count / total_split) * 100
+                print(f"  {source:20} | {age_group:8} | {count:6} ({percentage:5.1f}%)")
 
         print("\n✅ Tokenization completed successfully!")
     else:

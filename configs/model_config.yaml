@@ -7,31 +7,54 @@ model:
   top_p: 0.9
   top_k: 50
 
-# Training Configuration
+# Training Configuration - Optimized for VRAM utilization
 training:
-  batch_size: 4
-  learning_rate: 2e-5
-  epochs: 3
-  gradient_accumulation_steps: 8
-  warmup_steps: 100
+  batch_size: 12                    # Increased from 4 to utilize VRAM
+  learning_rate: 5e-5              # Higher LR for larger batches
+  epochs: 5                        # Increased as requested
+  gradient_accumulation_steps: 3    # Reduced to maintain effective batch size
+  warmup_steps: 50                 # Reduced proportionally
   weight_decay: 0.01
-  save_steps: 500
-  eval_steps: 250
-  logging_steps: 50
   max_grad_norm: 1.0
+  max_train_samples: 8000          # Moderate dataset reduction for speed
+  max_eval_samples: 800            # Smaller eval set
 
-# Data Configuration
+# Quantization Configuration - 4-bit for memory efficiency
+quantization:
+  enabled: true
+  load_in_4bit: true
+  bnb_4bit_compute_dtype: "float16"
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_use_double_quant: true
+
+# LoRA Configuration - Higher rank to utilize available VRAM
+lora:
+  enabled: true
+  task_type: "CAUSAL_LM"
+  r: 32                            # Increased from 16
+  lora_alpha: 64                   # Scaled with rank
+  lora_dropout: 0.1
+  target_modules:
+    - "q_proj"
+    - "k_proj" 
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+# Data Configuration - Longer sequences to utilize VRAM
 data:
-  max_sequence_length: 1024
+  max_sequence_length: 1536        # Increased from 1024
   train_split: 0.8
   val_split: 0.1
   test_split: 0.1
   min_story_length: 100
-  max_story_length: 5000
+  max_story_length: 8000           # Allow longer stories
 
 # Project Gutenberg Configuration
 gutenberg:
-  min_downloads: 1000  # Minimum downloads required per book
+  min_downloads: 1000
 
   categories:
     science_fiction_fantasy:
@@ -88,7 +111,7 @@ history:
   max_summary_length: 150
   title_max_length: 50
 
-# Paths - Updated for new structure
+# Paths
 paths:
   data_root: "data"
   data_raw: "data/raw"
@@ -101,7 +124,28 @@ paths:
   samples: "outputs/samples"
   users: "data/users"
 
-# DeepSpeed Configuration
+# Hyperparameter Tuning Configuration
+hyperparameter_tuning:
+  enabled: true
+  sample_percentage: 5  # 5% stratified sample for tuning
+  
+  search_spaces:
+    learning_rate: [2e-5, 5e-5, 1e-4]
+    
+    lora_rank_alpha:
+      - r: 8
+        alpha: 16
+      - r: 16  
+        alpha: 32
+      - r: 24
+        alpha: 48
+    
+    batch_size: [4, 8, 12]  # 4 and 12 for VRAM comparison, 8 as middle
+    lora_dropout: [0.05, 0.1, 0.2]
+    weight_decay: [0.005, 0.01, 0.02]
+    warmup_steps: [25, 50, 100]
+
+# DeepSpeed Configuration - Optimized for less CPU offloading
 deepspeed:
   enabled: true
-  config_path: "configs/deepspeed_config.json"
+  config_path: "configs/deepspeed_config_optimized.json"
