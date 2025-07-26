@@ -14,7 +14,7 @@ This system creates personalized stories for users of different ages by:
 ## 📁 Project Structure
 
 ```
-IE7574-Summer-2025-Group-5-Project/
+IE7374-Summer-2025-Group-5-Project/
 ├── configs/
 │   └── model_config.yaml          # Model and training configuration
 ├── utils/
