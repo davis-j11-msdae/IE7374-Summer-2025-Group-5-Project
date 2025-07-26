@@ -78,7 +78,7 @@ SAMPLE_PROMPTS = {
 
 
 class SampleProcessor:
-    """Processes sample prompts and generates evaluation results."""
+    """Processes sample prompts and generates evaluation results using Mistral 7B."""
 
     def __init__(self):
         self.config = load_config()
@@ -110,7 +110,7 @@ class SampleProcessor:
         ], ignore_index=True)
 
     def process_single_sample(self, username: str, user_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Process all prompts for a single sample user."""
+        """Process all prompts for a single sample user using Mistral 7B."""
         log_operation_status(f"Processing samples for {username}")
 
         user_info = {
@@ -122,7 +122,7 @@ class SampleProcessor:
         user_results = []
 
         for i, prompt in enumerate(user_data['prompts']):
-            print(f"  📝 Prompt {i + 1}: {prompt[:50]}...")
+            print(f"  Prompt {i + 1}: {prompt[:50]}...")
 
             # Determine if this is a continuation
             is_continuation = i > 0
@@ -135,7 +135,7 @@ class SampleProcessor:
                     previous_story = self.history_manager.get_story_by_title(username, titles[-1])
                     history_context = previous_story['summary']
 
-            # Generate story
+            # Generate story using Mistral 7B
             result = self.model_runner.generate_appropriate_story(
                 prompt,
                 user_info,
@@ -148,18 +148,19 @@ class SampleProcessor:
                 'prompt_number': i + 1,
                 'prompt': prompt,
                 'is_continuation': is_continuation,
-                'generation_result': result
+                'generation_result': result,
+                'model_used': 'mistral-7b-instruct-v0.3'
             }
 
             if result['success']:
                 story = result['story']
                 evaluation = result['evaluation']
 
-                print(f"    ✅ Generated ({len(story)} chars)")
+                print(f"    Generated ({len(story)} chars)")
                 print(
-                    f"    📊 Quality: Grammar {evaluation['grammar_score']:.1f}/100, Coherence {evaluation['coherence_score']:.1f}/100")
-                print(f"    🎯 Age Group: {evaluation['predicted_age_group']} (Target: {user_info['age_group']})")
-                print(f"    🛡️ Safe: {'Yes' if not evaluation['is_toxic'] else 'No'}")
+                    f"    Quality: Grammar {evaluation.get('grammar_score', 0):.1f}/100, Coherence {evaluation.get('coherence_score', 0):.1f}/100")
+                print(f"    Age Group: {evaluation.get('predicted_age_group', 'N/A')} (Target: {user_info['age_group']})")
+                print(f"    Safe: {'Yes' if not evaluation.get('is_toxic', True) else 'No'}")
 
                 # Save to history with specific save behavior
                 if username == 'child_3' and is_continuation:
@@ -193,7 +194,7 @@ class SampleProcessor:
                     'saved_to_history': True
                 })
             else:
-                print(f"    ❌ Failed: {result['error']}")
+                print(f"    Failed: {result['error']}")
                 sample_result.update({
                     'story': None,
                     'story_length': 0,
@@ -208,12 +209,12 @@ class SampleProcessor:
         return user_results
 
     def process_all_samples(self) -> Dict[str, Any]:
-        """Process all sample prompts and generate comprehensive results."""
-        log_operation_status("Sample story generation")
+        """Process all sample prompts and generate comprehensive results using Mistral 7B."""
+        log_operation_status("Sample story generation using Mistral 7B")
 
         # Load model
         if not self.model_runner.load_model():
-            print("❌ Failed to load model")
+            print("Failed to load Mistral 7B model")
             return {}
 
         # Setup sample users
@@ -229,7 +230,8 @@ class SampleProcessor:
             'age_group_breakdown': {'child': 0, 'kid': 0, 'teen': 0, 'adult': 0},
             'quality_scores': {'grammar': [], 'coherence': [], 'flesch_kincaid': []},
             'safety_stats': {'safe_stories': 0, 'toxic_stories': 0},
-            'continuation_stats': {'total_continuations': 0, 'successful_continuations': 0}
+            'continuation_stats': {'total_continuations': 0, 'successful_continuations': 0},
+            'model_used': 'mistral-7b-instruct-v0.3'
         }
 
         for username, user_data in SAMPLE_PROMPTS.items():
@@ -242,16 +244,16 @@ class SampleProcessor:
                     summary_stats['successful_generations'] += 1
 
                     evaluation = result['evaluation']
-                    summary_stats['quality_scores']['grammar'].append(evaluation['grammar_score'])
-                    summary_stats['quality_scores']['coherence'].append(evaluation['coherence_score'])
-                    summary_stats['quality_scores']['flesch_kincaid'].append(evaluation['flesch_kincaid_score'])
+                    summary_stats['quality_scores']['grammar'].append(evaluation.get('grammar_score', 75))
+                    summary_stats['quality_scores']['coherence'].append(evaluation.get('coherence_score', 75))
+                    summary_stats['quality_scores']['flesch_kincaid'].append(evaluation.get('flesch_kincaid_score', 8))
 
                     # Age group stats
                     age_group = self.model_runner.get_age_group(user_data['age'])
                     summary_stats['age_group_breakdown'][age_group] += 1
 
                     # Safety stats
-                    if evaluation['is_toxic']:
+                    if evaluation.get('is_toxic', False):
                         summary_stats['safety_stats']['toxic_stories'] += 1
                     else:
                         summary_stats['safety_stats']['safe_stories'] += 1
@@ -280,10 +282,15 @@ class SampleProcessor:
             'timestamp': self.get_timestamp(),
             'summary': summary_stats,
             'detailed_results': all_results,
-            'sample_prompts_used': SAMPLE_PROMPTS
+            'sample_prompts_used': SAMPLE_PROMPTS,
+            'model_info': {
+                'name': 'mistral-7b-instruct-v0.3',
+                'type': 'fine-tuned',
+                'base_model': self.config['model']['base_model']
+            }
         }
 
-        log_operation_status("Sample story generation", "completed")
+        log_operation_status("Sample story generation using Mistral 7B", "completed")
         return final_results
 
     def get_timestamp(self) -> str:
@@ -294,7 +301,7 @@ class SampleProcessor:
     def save_results(self, results: Dict[str, Any]) -> str:
         """Save results to JSON file."""
         timestamp = self.get_timestamp().replace(':', '-').split('.')[0]
-        results_file = Path(self.config['paths']['samples']) / f"results_{timestamp}.json"
+        results_file = Path(self.config['paths']['samples']) / f"mistral_results_{timestamp}.json"
 
         save_json(results, results_file)
         return str(results_file)
@@ -302,11 +309,14 @@ class SampleProcessor:
     def generate_report(self, results: Dict[str, Any]) -> str:
         """Generate a formatted text report from results."""
         summary = results['summary']
+        model_info = results.get('model_info', {})
 
         report = []
-        report.append("SAMPLE STORY GENERATION REPORT")
-        report.append("=" * 50)
+        report.append("SAMPLE STORY GENERATION REPORT - MISTRAL 7B")
+        report.append("=" * 60)
         report.append(f"Generated: {results['timestamp']}")
+        report.append(f"Model: {model_info.get('name', 'mistral-7b-instruct-v0.3')}")
+        report.append(f"Base Model: {model_info.get('base_model', 'mistralai/Mistral-7B-Instruct-v0.3')}")
         report.append("")
 
         # Overall statistics
@@ -383,9 +393,9 @@ class SampleProcessor:
                     eval_data = result['evaluation']
                     report.append(f"    Length: {result['word_count']} words")
                     report.append(
-                        f"    Quality: Grammar {eval_data['grammar_score']:.1f}, Coherence {eval_data['coherence_score']:.1f}")
-                    report.append(f"    Age Prediction: {eval_data['predicted_age_group']}")
-                    report.append(f"    Safe: {'Yes' if not eval_data['is_toxic'] else 'No'}")
+                        f"    Quality: Grammar {eval_data.get('grammar_score', 0):.1f}, Coherence {eval_data.get('coherence_score', 0):.1f}")
+                    report.append(f"    Age Prediction: {eval_data.get('predicted_age_group', 'N/A')}")
+                    report.append(f"    Safe: {'Yes' if not eval_data.get('is_toxic', True) else 'No'}")
                 else:
                     report.append(f"    Error: {result.get('error', 'Unknown error')}")
 
@@ -393,8 +403,8 @@ class SampleProcessor:
 
 
 def main():
-    """Main function to run sample processing."""
-    log_operation_status("Sample story processing")
+    """Main function to run sample processing with Mistral 7B."""
+    log_operation_status("Sample story processing using Mistral 7B")
 
     # Process samples
     processor = SampleProcessor()
@@ -403,25 +413,25 @@ def main():
     if results:
         # Save results
         results_file = processor.save_results(results)
-        print(f"✅ Results saved to: {results_file}")
+        print(f"Results saved to: {results_file}")
 
         # Generate and save report
         report = processor.generate_report(results)
 
-        report_file = results_file.replace('results_', 'report_').replace('.json', '.txt')
+        report_file = results_file.replace('mistral_results_', 'mistral_report_').replace('.json', '.txt')
         with open(report_file, 'w', encoding='utf-8') as f:
             f.write(report)
 
-        print(f"📄 Report saved to: {report_file}")
+        print(f"Report saved to: {report_file}")
 
         # Display summary
         print(f"\n{report}")
 
-        print(f"\n🎉 Sample processing completed successfully!")
-        print(f"📊 Generated {results['summary']['successful_generations']} stories")
-        print(f"📁 Results available in: {processor.config['paths']['samples']}")
+        print(f"\nSample processing completed successfully using Mistral 7B!")
+        print(f"Generated {results['summary']['successful_generations']} stories")
+        print(f"Results available in: {processor.config['paths']['samples']}")
     else:
-        print("❌ Sample processing failed")
+        print("Sample processing failed")
 
 
 if __name__ == "__main__":

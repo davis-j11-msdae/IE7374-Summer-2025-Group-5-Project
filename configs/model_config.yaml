@@ -1,23 +1,26 @@
-# Model Configuration
+# Model Configuration - Updated for Mistral 7B Instruct v0.3
 model:
-  name: "mixtral-8x7b-storytelling"
-  base_model: "mistralai/Mixtral-8x7B-Instruct-v0.1"
-  max_length: 2048
+  name: "mistral-7b-base"
+  base_model: "mistralai/Mistral-7B-Instruct-v0.3"
+  max_length: 4096                     # Mistral 7B supports 4k context
   temperature: 0.7
   top_p: 0.9
   top_k: 50
 
-# Training Configuration - Optimized for VRAM utilization
+# Training Configuration - Optimized for 10GB VRAM
 training:
-  batch_size: 12                    # Increased from 4 to utilize VRAM
-  learning_rate: 5e-5              # Higher LR for larger batches
-  epochs: 5                        # Increased as requested
-  gradient_accumulation_steps: 3    # Reduced to maintain effective batch size
-  warmup_steps: 50                 # Reduced proportionally
+  batch_size: 16                       # Increased for smaller model
+  learning_rate: 2e-4                  # Higher LR for 7B model
+  epochs: 5
+  gradient_accumulation_steps: 2       # Reduced due to larger batch size
+  warmup_steps: 100                    # Adjusted for smaller model
   weight_decay: 0.01
   max_grad_norm: 1.0
-  max_train_samples: 8000          # Moderate dataset reduction for speed
-  max_eval_samples: 800            # Smaller eval set
+  max_train_samples: 12000             # Can handle more samples
+  max_eval_samples: 1200
+  eval_steps: 200                      # More frequent evaluation
+  save_steps: 400
+  logging_steps: 50
 
 # Quantization Configuration - 4-bit for memory efficiency
 quantization:
@@ -27,34 +30,34 @@ quantization:
   bnb_4bit_quant_type: "nf4"
   bnb_4bit_use_double_quant: true
 
-# LoRA Configuration - Higher rank to utilize available VRAM
+# LoRA Configuration - Higher rank due to lower VRAM usage
 lora:
   enabled: true
   task_type: "CAUSAL_LM"
-  r: 32                            # Increased from 16
-  lora_alpha: 64                   # Scaled with rank
+  r: 64                                # Increased from 32 for better adaptation
+  lora_alpha: 128                      # Scaled with rank
   lora_dropout: 0.1
-  target_modules:
+  target_modules:                      # Mistral 7B specific modules
     - "q_proj"
-    - "k_proj" 
+    - "k_proj"
     - "v_proj"
     - "o_proj"
     - "gate_proj"
     - "up_proj"
     - "down_proj"
 
-# Data Configuration - Longer sequences to utilize VRAM
+# Data Configuration - Longer sequences due to better VRAM efficiency
 data:
-  max_sequence_length: 1536        # Increased from 1024
+  max_sequence_length: 2048            # Increased from 1536
   train_split: 0.8
   val_split: 0.1
   test_split: 0.1
   min_story_length: 100
-  max_story_length: 8000           # Allow longer stories
+  max_story_length: 10000              # Allow longer stories
 
 # Project Gutenberg Configuration
 gutenberg:
-  min_downloads: 1000
+  min_downloads: 2000
 
   categories:
     science_fiction_fantasy:
@@ -77,14 +80,6 @@ gutenberg:
       bookshelf_id: 641
       description: "Humor"
 
-    short_stories:
-      bookshelf_id: 634
-      description: "Short Stories"
-
-    fairy_tales:
-      bookshelf_id: 216
-      description: "Children's Myth, Fairy Tales, etc."
-
 # Age Groups
 age_groups:
   child: [0, 5]
@@ -100,16 +95,17 @@ evaluation:
     kid: [6.0, 12.9]
     teen: [13.0, 17.9]
     adult: [18.0, 100]
-  grammar_model: "gpt-3.5-turbo"
-  coherence_model: "gpt-3.5-turbo"
   toxicity_threshold: 0.5
+  mistral_eval_temperature: 0.1         # Low temperature for consistent evaluation
+  mistral_eval_max_tokens: 50           # Limit tokens for evaluation responses
 
 # History Configuration
 history:
   max_history_length: 5
-  summary_model: "facebook/bart-large-cnn"
   max_summary_length: 150
   title_max_length: 50
+  mistral_summary_temperature: 0.3      # Slightly higher for more creative summaries
+  mistral_summary_max_tokens: 80        # Limit tokens for summary responses
 
 # Paths
 paths:
@@ -124,28 +120,28 @@ paths:
   samples: "outputs/samples"
   users: "data/users"
 
-# Hyperparameter Tuning Configuration
+# Hyperparameter Tuning Configuration - Updated for Mistral 7B
 hyperparameter_tuning:
   enabled: true
-  sample_percentage: 5  # 5% stratified sample for tuning
-  
-  search_spaces:
-    learning_rate: [2e-5, 5e-5, 1e-4]
-    
-    lora_rank_alpha:
-      - r: 8
-        alpha: 16
-      - r: 16  
-        alpha: 32
-      - r: 24
-        alpha: 48
-    
-    batch_size: [4, 8, 12]  # 4 and 12 for VRAM comparison, 8 as middle
-    lora_dropout: [0.05, 0.1, 0.2]
-    weight_decay: [0.005, 0.01, 0.02]
-    warmup_steps: [25, 50, 100]
+  sample_percentage: 5
 
-# DeepSpeed Configuration - Optimized for less CPU offloading
+  search_spaces:
+    learning_rate: [1e-4, 2e-4, 5e-4]   # Higher LRs for smaller model
+
+    lora_rank_alpha:
+      - r: 16
+        alpha: 32
+      - r: 32
+        alpha: 64
+      - r: 64
+        alpha: 128
+
+    batch_size: [8, 16, 24]             # Higher batch sizes possible
+    lora_dropout: [0.05, 0.1, 0.15]
+    weight_decay: [0.005, 0.01, 0.02]
+    warmup_steps: [50, 100, 200]
+
+# DeepSpeed Configuration - Optimized for smaller model
 deepspeed:
   enabled: true
-  config_path: "configs/deepspeed_config_optimized.json"
+  config_path: "configs/deepspeed_config_mistral.json"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Data download script for the Personalized Storytelling System.
-Downloads required texts from Project Gutenberg and the Mixtral model for training.
+Downloads required texts from Project Gutenberg and the Mistral 7B model for training.
 """
 
 import os
@@ -80,8 +80,8 @@ class ProjectGutenbergDownloader:
             else:
                 status['missing_categories'].append(category_name)
 
-        # Check Mixtral model
-        model_path = os.path.join(self.data_paths['models'], 'mixtral-8x7b-base')
+        # Check Mistral 7B model
+        model_path = os.path.join(self.data_paths['models'], 'mistral-7b-base')
         if os.path.exists(model_path) and os.listdir(model_path):
             status['model_exists'] = True
             model_size = sum(os.path.getsize(os.path.join(dirpath, filename))
@@ -91,9 +91,9 @@ class ProjectGutenbergDownloader:
 
         return status
 
-    def get_bookshelf_books(self, bookshelf_id: int, min_downloads: int = 1000) -> List[Dict[str, Any]]:
+    def get_bookshelf_books(self, bookshelf_id: int, min_downloads: int = 2000) -> List[Dict[str, Any]]:
         """Get list of books from a Project Gutenberg bookshelf with minimum download threshold."""
-        print(f"📚 Fetching books from bookshelf {bookshelf_id}")
+        print(f"  Fetching books from bookshelf {bookshelf_id} (min downloads: {min_downloads})")
 
         books = []
         page = 1
@@ -102,8 +102,12 @@ class ProjectGutenbergDownloader:
             bookshelf_url = f"{self.bookshelf_url}/{bookshelf_id}?start_index={(page - 1) * 25}"
 
             time.sleep(self.request_delay)
-            response = self.session.get(bookshelf_url)
-            response.raise_for_status()
+            try:
+                response = self.session.get(bookshelf_url, timeout=30)
+                response.raise_for_status()
+            except requests.RequestException as e:
+                print(f"    Error fetching page {page}: {e}")
+                break
 
             soup = BeautifulSoup(response.content, 'html.parser')
             book_links = soup.find_all('li', class_='booklink')
@@ -118,7 +122,7 @@ class ProjectGutenbergDownloader:
                     continue
 
                 book_url = title_link.get('href')
-                if not book_url.startswith('/ebooks/'):
+                if not book_url or not book_url.startswith('/ebooks/'):
                     continue
 
                 book_id = book_url.split('/')[-1]
@@ -151,11 +155,11 @@ class ProjectGutenbergDownloader:
                 break
 
         books.sort(key=lambda x: x['downloads'], reverse=True)
-        print(f"  Found {len(books)} qualifying books")
+        print(f"    Found {len(books)} qualifying books")
         return books
 
-    def download_book_text(self, book_id: str, output_path: str) -> bool:
-        """Download plain text version of a book."""
+    def download_book_text(self, book_id: str) -> str:
+        """Download plain text version of a book and return content."""
         text_urls = [
             f"{self.base_url}/files/{book_id}/{book_id}-0.txt",
             f"{self.base_url}/files/{book_id}/{book_id}.txt",
@@ -164,126 +168,44 @@ class ProjectGutenbergDownloader:
 
         for url in text_urls:
             time.sleep(self.request_delay)
-            response = self.session.get(url, stream=True)
+            try:
+                response = self.session.get(url, stream=True, timeout=60)
 
-            if response.status_code == 200:
-                content_type = response.headers.get('content-type', '').lower()
-                if 'text' not in content_type and 'plain' not in content_type:
+                if response.status_code == 200:
+                    content_type = response.headers.get('content-type', '').lower()
+                    if 'text' in content_type or 'plain' in content_type or not content_type:
+                        content = response.text
+                        if self._validate_text_content(content):
+                            return content
+                elif response.status_code == 404:
                     continue
 
-                with open(output_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-
-                if self._validate_text_file(output_path):
-                    return True
-                else:
-                    os.unlink(output_path)
-            elif response.status_code == 404:
+            except requests.RequestException:
                 continue
 
-        return False
+        return None
 
-    def check_copyright_status(self, text: str) -> Dict[str, Any]:
-        """Check copyright status of Project Gutenberg text."""
-        header_end_patterns = [r'\*{3,}', r'_{3,}', r'={3,}']
-
-        header = text
-        for pattern in header_end_patterns:
-            match = re.search(pattern, text)
-            if match:
-                header = text[:match.start()]
-                break
-
-        if len(header) == len(text):
-            header = text[:3000]
-
-        header_lower = header.lower()
-
-        copyright_info = {
-            'is_public_domain': True,
-            'copyright_notice': None,
-            'restrictions': [],
-            'status': 'public_domain',
-            'header_length': len(header)
-        }
-
-        restrictive_patterns = [
-            r'copyright.*(?:reserved|holder|owner)',
-            r'all rights reserved',
-            r'reproduction.*prohibited',
-            r'may not be.*reproduced',
-            r'permission.*required'
-        ]
-
-        public_domain_patterns = [
-            r'public domain',
-            r'not copyrighted',
-            r'copyright.*expired',
-            r'free.*distribution',
-            r'no copyright'
-        ]
-
-        found_restrictions = []
-        for pattern in restrictive_patterns:
-            matches = re.findall(pattern, header_lower, re.IGNORECASE)
-            if matches:
-                found_restrictions.extend(matches)
-
-        public_domain_confirmations = []
-        for pattern in public_domain_patterns:
-            matches = re.findall(pattern, header_lower, re.IGNORECASE)
-            if matches:
-                public_domain_confirmations.extend(matches)
-
-        if public_domain_confirmations:
-            copyright_info['status'] = 'public_domain'
-            copyright_info['is_public_domain'] = True
-        elif found_restrictions:
-            copyright_info['is_public_domain'] = False
-            copyright_info['restrictions'] = found_restrictions
-            copyright_info['status'] = 'copyrighted'
-
-        return copyright_info
-
-    def _validate_text_file(self, file_path: str) -> Dict[str, Any]:
-        """Validate downloaded file for text content and copyright status."""
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
-
-        validation_result = {
-            'is_valid_text': False,
-            'is_public_domain': True,
-            'copyright_info': None,
-            'reason': None
-        }
+    def _validate_text_content(self, content: str) -> bool:
+        """Validate text content quality."""
+        if not content or len(content) < 1000:
+            return False
 
         if "project gutenberg" not in content.lower():
-            validation_result['reason'] = 'Not a Project Gutenberg file'
-            return validation_result
+            return False
 
-        sample = content[:1000]
+        # Check for reasonable text ratio
+        sample = content[:2000]
         printable_ratio = sum(1 for c in sample if c.isprintable() or c.isspace()) / len(sample)
-        if printable_ratio <= 0.9:
-            validation_result['reason'] = 'File appears to be binary or corrupted'
-            return validation_result
+        if printable_ratio < 0.9:
+            return False
 
-        copyright_info = self.check_copyright_status(content)
-        validation_result['copyright_info'] = copyright_info
-        validation_result['is_public_domain'] = copyright_info['is_public_domain']
-
-        if not copyright_info['is_public_domain']:
-            validation_result['reason'] = f"Restrictive copyright: {copyright_info['status']}"
-            return validation_result
-
-        validation_result['is_valid_text'] = True
-        validation_result['reason'] = f"Valid public domain text (header: {copyright_info['header_length']} chars)"
-        return validation_result
+        return True
 
     def clean_gutenberg_text(self, text: str) -> str:
         """Clean Project Gutenberg text by removing headers/footers and metadata."""
         lines = text.split('\n')
 
+        # Find start of actual content
         start_idx = 0
         for i, line in enumerate(lines):
             line_lower = line.lower().strip()
@@ -295,6 +217,7 @@ class ProjectGutenbergDownloader:
                 start_idx = i + 1
                 break
 
+        # Find end of actual content
         end_idx = len(lines)
         for i in range(len(lines) - 1, -1, -1):
             line_lower = lines[i].lower().strip()
@@ -308,6 +231,7 @@ class ProjectGutenbergDownloader:
 
         content_lines = lines[start_idx:end_idx]
 
+        # Remove page numbers and metadata
         cleaned_lines = []
         for line in content_lines:
             line = line.strip()
@@ -316,26 +240,24 @@ class ProjectGutenbergDownloader:
             cleaned_lines.append(line)
 
         cleaned_text = '\n'.join(cleaned_lines)
+        # Remove excessive whitespace
         cleaned_text = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned_text)
 
         return cleaned_text.strip()
 
     def download_category_books(self, category_name: str, bookshelf_id: int,
-                                min_downloads: int = 1000) -> bool:
-        """Download books from a specific category with deduplication."""
-        print(f"🔄 Downloading {category_name}")
+                                min_downloads: int = 2000) -> bool:
+        """Download books from a specific category."""
+        print(f"Downloading {category_name}...")
 
         books = self.get_bookshelf_books(bookshelf_id, min_downloads)
 
         if not books:
-            print(f"❌ No books found for {category_name}")
+            print(f"  No books found for {category_name}")
             return False
 
-        category_dir = os.path.join(self.data_paths['data_raw'], category_name.lower().replace(' ', '_'))
-
         seen_books = set()
-        successful_downloads = 0
-        all_texts = []
+        successful_downloads = []
 
         with tqdm(total=len(books), desc=f"Processing {category_name}") as pbar:
             for book in books:
@@ -343,6 +265,7 @@ class ProjectGutenbergDownloader:
                 title = book['title']
                 author = book['author']
 
+                # Simple deduplication
                 normalized_title = re.sub(r'[^\w\s]', '', title.lower()).strip()
                 normalized_author = re.sub(r'[^\w\s]', '', author.lower()).strip()
                 book_signature = f"{normalized_title}_{normalized_author}"
@@ -353,132 +276,133 @@ class ProjectGutenbergDownloader:
 
                 seen_books.add(book_signature)
 
-                safe_title = re.sub(r'[^\w\s-]', '', title)[:50]
-                safe_title = re.sub(r'\s+', '_', safe_title)
+                # Download book content
+                content = self.download_book_text(book_id)
 
-                temp_file = os.path.join(category_dir, f"{book_id}_{safe_title}.txt")
+                if content:
+                    cleaned_content = self.clean_gutenberg_text(content)
 
-                if self.download_book_text(book_id, temp_file):
-                    validation_result = self._validate_text_file(temp_file)
-
-                    if not validation_result['is_valid_text']:
-                        os.unlink(temp_file)
-                        pbar.update(1)
-                        continue
-
-                    with open(temp_file, 'r', encoding='utf-8', errors='ignore') as f:
-                        raw_text = f.read()
-
-                    cleaned_text = self.clean_gutenberg_text(raw_text)
-
-                    if len(cleaned_text.split()) >= 1000:
-                        all_texts.append({
+                    if len(cleaned_content.split()) >= 1000:
+                        successful_downloads.append({
                             'title': title,
                             'author': author,
-                            'text': cleaned_text,
+                            'text': cleaned_content,
                             'id': book_id,
                             'downloads': book['downloads'],
-                            'word_count': len(cleaned_text.split()),
+                            'word_count': len(cleaned_content.split()),
                             'bookshelf_id': bookshelf_id
                         })
-                        successful_downloads += 1
-
-                    os.unlink(temp_file)
 
                 pbar.update(1)
-                pbar.set_postfix(downloaded=successful_downloads)
+                pbar.set_postfix(downloaded=len(successful_downloads))
 
-        if successful_downloads == 0:
-            print(f"❌ No successful downloads for {category_name}")
+        if not successful_downloads:
+            print(f"  No successful downloads for {category_name}")
             return False
 
-        all_texts.sort(key=lambda x: x['downloads'], reverse=True)
+        # Sort by popularity
+        successful_downloads.sort(key=lambda x: x['downloads'], reverse=True)
 
+        # Save combined file
         combined_file = os.path.join(self.data_paths['data_raw'],
-                                     f"{category_name.lower().replace(' ', '_')}_stories.txt")
+                                     f"{category_name}_stories.txt")
 
         total_words = 0
 
-        with open(combined_file, 'w', encoding='utf-8') as f:
-            for i, book_data in enumerate(all_texts):
-                if i > 0:
-                    f.write("\n\n" + "=" * 80 + "\n\n")
+        try:
+            with open(combined_file, 'w', encoding='utf-8') as f:
+                for i, book_data in enumerate(successful_downloads):
+                    if i > 0:
+                        f.write("\n\n" + "=" * 80 + "\n\n")
 
-                f.write(f"TITLE: {book_data['title']}\n")
-                f.write(f"AUTHOR: {book_data['author']}\n")
-                f.write(f"PROJECT_GUTENBERG_ID: {book_data['id']}\n")
-                f.write(f"DOWNLOADS: {book_data['downloads']}\n")
-                f.write(f"WORD_COUNT: {book_data['word_count']}\n")
-                f.write(f"BOOKSHELF_ID: {book_data['bookshelf_id']}\n")
-                f.write("\n" + book_data['text'])
-                total_words += book_data['word_count']
+                    f.write(f"TITLE: {book_data['title']}\n")
+                    f.write(f"AUTHOR: {book_data['author']}\n")
+                    f.write(f"PROJECT_GUTENBERG_ID: {book_data['id']}\n")
+                    f.write(f"DOWNLOADS: {book_data['downloads']}\n")
+                    f.write(f"WORD_COUNT: {book_data['word_count']}\n")
+                    f.write(f"BOOKSHELF_ID: {book_data['bookshelf_id']}\n")
+                    f.write("\n" + book_data['text'])
+                    total_words += book_data['word_count']
 
-        print(f"✅ {category_name}: {successful_downloads} books, {total_words:,} words")
-        return True
+            print(f"  Saved {category_name}: {len(successful_downloads)} books, {total_words:,} words")
+            print(f"  File: {combined_file}")
+            return True
 
-    def download_mixtral_model(self) -> bool:
-        """Download the Mixtral model and tokenizer."""
-        from transformers import AutoTokenizer, AutoModelForCausalLM
-        from dotenv import load_dotenv
+        except Exception as e:
+            print(f"  Error saving {category_name}: {e}")
+            return False
+
+    def download_mistral_model(self) -> bool:
+        """Download the Mistral 7B model and tokenizer."""
+        try:
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+            from dotenv import load_dotenv
+        except ImportError as e:
+            print(f"Required packages not available: {e}")
+            return False
 
         load_dotenv()
 
         model_name = self.config['model']['base_model']
-        model_path = os.path.join(self.data_paths['models'], 'mixtral-8x7b-base')
+        model_path = os.path.join(self.data_paths['models'], 'mistral-7b-base')
 
-        print(f"🔄 Downloading Mixtral model: {model_name}")
-
+        print(f"Downloading Mistral 7B model: {model_name}")
         ensure_dir_exists(model_path)
 
         hf_token = os.getenv('HF_TOKEN')
 
-        print("  📥 Downloading tokenizer...")
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            use_fast=True,
-            trust_remote_code=True,
-            token=hf_token
-        )
+        try:
+            print("  Downloading tokenizer...")
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                use_fast=True,
+                trust_remote_code=True,
+                token=hf_token
+            )
 
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-            tokenizer.pad_token_id = tokenizer.eos_token_id
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+                tokenizer.pad_token_id = tokenizer.eos_token_id
 
-        tokenizer.save_pretrained(model_path)
-        print("  ✅ Tokenizer saved")
+            tokenizer.save_pretrained(model_path)
+            print("    Tokenizer saved")
 
-        print("  📥 Downloading model (this may take 20-30 minutes)...")
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto",
-            device_map=None,
-            trust_remote_code=True,
-            token=hf_token,
-            low_cpu_mem_usage=True
-        )
+            print("  Downloading model (this may take 10-15 minutes)...")
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype="auto",
+                device_map=None,
+                trust_remote_code=True,
+                token=hf_token,
+                low_cpu_mem_usage=True
+            )
 
-        model.save_pretrained(model_path)
-        print("  ✅ Model saved")
+            model.save_pretrained(model_path)
+            print("    Model saved")
 
-        total_size = 0
-        for root, dirs, files in os.walk(model_path):
-            for file in files:
-                file_path = os.path.join(root, file)
-                total_size += os.path.getsize(file_path)
+            # Calculate total size
+            total_size = 0
+            for root, dirs, files in os.walk(model_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    total_size += os.path.getsize(file_path)
 
-        size_gb = total_size / (1024 ** 3)
-        print(f"✅ Model download complete: {size_gb:.2f} GB")
+            size_gb = total_size / (1024 ** 3)
+            print(f"  Model download complete: {size_gb:.2f} GB")
+            return True
 
-        return True
+        except Exception as e:
+            print(f"  Model download failed: {e}")
+            return False
 
     def download_missing_categories(self, missing_categories: List[str]) -> bool:
         """Download only missing categories."""
         if not missing_categories:
-            print("✅ All categories already exist")
+            print("All categories already exist")
             return True
 
         categories = self.gutenberg_config.get('categories', {})
-        min_downloads = self.gutenberg_config.get('min_downloads', 1000)
+        min_downloads = self.gutenberg_config.get('min_downloads', 2000)
 
         success_count = 0
         for category_name in missing_categories:
@@ -494,36 +418,36 @@ class ProjectGutenbergDownloader:
 
 def display_status(status: Dict[str, Any]):
     """Display current download status."""
-    print("\n📊 CURRENT STATUS")
+    print("\nCURRENT STATUS")
     print("=" * 50)
 
     # Categories status
-    print("📚 Project Gutenberg Categories:")
+    print("Project Gutenberg Categories:")
     if status['existing_categories']:
-        print("  ✅ Existing:")
+        print("  Existing:")
         for category in status['existing_categories']:
             size_mb = status['categories'][category]['size_mb']
             print(f"    {category}: {size_mb:.1f} MB")
 
     if status['missing_categories']:
-        print("  ❌ Missing:")
+        print("  Missing:")
         for category in status['missing_categories']:
             print(f"    {category}")
 
     # Model status
-    print(f"\n🤖 Mixtral Model:")
+    print(f"\nMistral 7B Model:")
     if status['model_exists']:
         size_gb = status.get('model_size_gb', 0)
-        print(f"  ✅ Exists: {size_gb:.1f} GB")
+        print(f"  Exists: {size_gb:.1f} GB")
     else:
-        print(f"  ❌ Missing")
+        print(f"  Missing")
 
 
 def main():
     """Main function with menu system."""
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    print("🎭 PERSONALIZED STORYTELLING SYSTEM - DATA DOWNLOADER")
+    print("PERSONALIZED STORYTELLING SYSTEM - DATA DOWNLOADER")
     print("=" * 70)
 
     downloader = ProjectGutenbergDownloader()
@@ -532,7 +456,7 @@ def main():
         status = downloader.check_existing_data()
         display_status(status)
 
-        print(f"\n📋 DOWNLOAD OPTIONS")
+        print(f"\nDOWNLOAD OPTIONS")
         print("=" * 30)
         print("1. Download missing data and models")
         print("2. Force download all data")
@@ -542,42 +466,42 @@ def main():
         choice = input("\nSelect option (1-4): ").strip()
 
         if choice == "1":
-            print("\n🔄 Downloading missing data and models...")
+            print("\nDownloading missing data and models...")
 
             if status['missing_categories']:
-                print(f"📚 Missing categories: {', '.join(status['missing_categories'])}")
+                print(f"Missing categories: {', '.join(status['missing_categories'])}")
                 categories_success = downloader.download_missing_categories(status['missing_categories'])
             else:
-                print("✅ All categories exist")
+                print("All categories exist")
                 categories_success = True
 
             if not status['model_exists']:
-                print("🤖 Missing model, downloading...")
-                model_success = downloader.download_mixtral_model()
+                print("Missing model, downloading...")
+                model_success = downloader.download_mistral_model()
             else:
-                print("✅ Model exists")
+                print("Model exists")
                 model_success = True
 
             if categories_success and model_success:
-                print("\n✅ All missing data downloaded successfully!")
+                print("\nAll missing data downloaded successfully!")
             else:
-                print("\n❌ Some downloads failed")
+                print("\nSome downloads failed")
 
         elif choice == "2":
-            print("\n🔄 Force downloading all categories...")
+            print("\nForce downloading all categories...")
 
             categories = downloader.gutenberg_config.get('categories', {})
             if not categories:
-                print("❌ No categories configured")
+                print("No categories configured")
                 continue
 
-            print(f"📚 Will download {len(categories)} categories:")
+            print(f"Will download {len(categories)} categories:")
             for name in categories.keys():
                 print(f"  - {name}")
 
             confirm = input("\nThis will overwrite existing data. Continue? (y/N): ").strip().lower()
             if confirm == 'y':
-                min_downloads = downloader.gutenberg_config.get('min_downloads', 1000)
+                min_downloads = downloader.gutenberg_config.get('min_downloads', 2000)
                 success_count = 0
 
                 for category_name, config in categories.items():
@@ -586,16 +510,16 @@ def main():
                         success_count += 1
 
                 if success_count == len(categories):
-                    print("\n✅ All categories downloaded successfully!")
+                    print("\nAll categories downloaded successfully!")
                 else:
-                    print("\n❌ Some category downloads failed")
+                    print("\nSome category downloads failed")
             else:
                 print("Cancelled")
 
         elif choice == "3":
-            print("\n🔄 Force downloading Mixtral model...")
+            print("\nForce downloading Mistral 7B model...")
 
-            model_path = os.path.join(downloader.data_paths['models'], 'mixtral-8x7b-base')
+            model_path = os.path.join(downloader.data_paths['models'], 'mistral-7b-base')
             if os.path.exists(model_path):
                 confirm = input("Model exists. Overwrite? (y/N): ").strip().lower()
                 if confirm != 'y':
@@ -604,20 +528,20 @@ def main():
 
                 import shutil
                 shutil.rmtree(model_path)
-                print("  🗑️ Removed existing model")
+                print("  Removed existing model")
 
-            success = downloader.download_mixtral_model()
+            success = downloader.download_mistral_model()
             if success:
-                print("\n✅ Model downloaded successfully!")
+                print("\nModel downloaded successfully!")
             else:
-                print("\n❌ Model download failed")
+                print("\nModel download failed")
 
         elif choice == "4":
-            print("👋 Goodbye!")
+            print("Goodbye!")
             break
 
         else:
-            print("❌ Invalid choice. Please try again.")
+            print("Invalid choice. Please try again.")
 
         input("\nPress Enter to continue...")
 

@@ -1,9 +1,11 @@
 import os
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
-from transformers import pipeline
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
 from detoxify import Detoxify
 from utils.helpers import (
     load_config, ensure_dir_exists, save_json, load_json,
@@ -13,20 +15,119 @@ from utils.helpers import (
 cwd = set_cwd()
 
 
+class MistralSummarizer:
+    """Summarizer using Mistral model for story summarization."""
+
+    def __init__(self, model_path: str, config: Dict[str, Any]):
+        self.model_path = model_path
+        self.config = config
+        self.history_config = config['history']
+        self.model = None
+        self.tokenizer = None
+        self._load_model()
+
+    def _load_model(self):
+        """Load Mistral model for summarization."""
+        print("Loading Mistral model for summarization...")
+
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, use_fast=True)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_path,
+            torch_dtype=torch.float16,
+            device_map="auto" if torch.cuda.is_available() else None,
+            low_cpu_mem_usage=True
+        )
+        self.model.eval()
+        print("Mistral summarizer loaded")
+
+    def generate_summary(self, story: str) -> str:
+        """Generate a summary using Mistral model."""
+        # Ensure story is long enough for summarization
+        if len(story.split()) < 50:
+            return story[:self.history_config['max_summary_length']]
+
+        prompt = f"""Summarize the following story in 2-3 sentences. Focus on the main plot points and characters. Keep it concise and engaging.
+
+Story: {story}
+
+Summary:"""
+
+        try:
+            # Format using Mistral's chat template
+            formatted_prompt = f"<s>[INST] {prompt} [/INST]"
+
+            inputs = self.tokenizer(
+                formatted_prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=1536  # Leave room for summary
+            )
+
+            if torch.cuda.is_available():
+                inputs = {k: v.cuda() for k, v in inputs.items()}
+
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=self.history_config['mistral_summary_max_tokens'],
+                    temperature=self.history_config['mistral_summary_temperature'],
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id
+                )
+
+            summary = self.tokenizer.decode(
+                outputs[0][inputs['input_ids'].shape[1]:],
+                skip_special_tokens=True
+            ).strip()
+
+            # Clean up summary
+            summary = summary.strip()
+            if not summary.endswith('.'):
+                summary += '.'
+
+            # Truncate if too long
+            if len(summary) > self.history_config['max_summary_length']:
+                sentences = summary.split('.')
+                summary = '. '.join(sentences[:-1]) + '.'
+                if len(summary) > self.history_config['max_summary_length']:
+                    summary = summary[:self.history_config['max_summary_length'] - 3] + '...'
+
+            return summary
+
+        except Exception as e:
+            print(f"Summary generation failed: {e}")
+            # Fallback: return first part of story
+            words = story.split()
+            max_words = min(30, len(words))
+            return ' '.join(words[:max_words]) + '...'
+
+
 class StoryHistoryManager:
-    """Manages user story history with summarization and toxicity checking."""
+    """Manages user story history with Mistral-based summarization and toxicity checking."""
 
     def __init__(self):
         self.config = load_config()
         self.history_config = self.config['history']
         self.paths = self.config['paths']
 
-        # Initialize summarization pipeline
-        self.summarizer = pipeline(
-            "summarization",
-            model=self.history_config['summary_model'],
-            tokenizer=self.history_config['summary_model']
-        )
+        # Determine model path for summarization
+        models_path = self.config['paths']['models']
+        tuned_model_path = os.path.join(models_path, "tuned_story_llm")
+        base_model_path = os.path.join(models_path, "mistral-7b-base")
+
+        if os.path.exists(tuned_model_path):
+            model_path = tuned_model_path
+        elif os.path.exists(base_model_path):
+            model_path = base_model_path
+        else:
+            model_path = self.config['model']['base_model']
+
+        # Initialize Mistral summarizer
+        self.summarizer = MistralSummarizer(model_path, self.config)
 
         # Initialize toxicity detector for title validation
         self.detoxify = Detoxify('original')
@@ -63,35 +164,8 @@ class StoryHistoryManager:
             return False
 
     def generate_summary(self, story: str) -> str:
-        """Generate a summary of the story."""
-        try:
-            # Ensure story is long enough for summarization
-            if len(story.split()) < 50:
-                return story[:self.history_config['max_summary_length']]
-
-            # Generate summary
-            summary_result = self.summarizer(
-                story,
-                max_length=self.history_config['max_summary_length'],
-                min_length=30,
-                do_sample=False
-            )
-
-            summary = summary_result[0]['summary_text']
-
-            # Clean up summary
-            summary = summary.strip()
-            if not summary.endswith('.'):
-                summary += '.'
-
-            return summary
-
-        except Exception as e:
-            print(f"Error generating summary: {e}")
-            # Fallback: return first part of story
-            words = story.split()
-            max_words = min(30, len(words))
-            return ' '.join(words[:max_words]) + '...'
+        """Generate a summary of the story using Mistral."""
+        return self.summarizer.generate_summary(story)
 
     def validate_title(self, title: str) -> bool:
         """Validate that title is not toxic."""
@@ -111,54 +185,71 @@ class StoryHistoryManager:
             return False
 
     def suggest_titles(self, story_summary: str) -> List[str]:
-        """Suggest titles based on story summary."""
-        # Extract key words and phrases
-        words = story_summary.split()
+        """Suggest titles based on story summary using Mistral."""
+        prompt = f"""Based on this story summary, suggest 3 short, creative titles (each under 50 characters). Respond with only the titles, one per line:
 
-        # Simple title suggestions based on content
-        suggestions = []
+Summary: {story_summary}
 
-        # Look for character names (capitalized words)
-        characters = [word.strip('.,!?') for word in words if word[0].isupper() and len(word) > 2]
+Titles:"""
 
-        # Look for key themes
-        themes = []
-        theme_keywords = {
-            'adventure': ['journey', 'quest', 'travel', 'explore'],
-            'magic': ['magic', 'magical', 'wizard', 'spell'],
-            'friendship': ['friend', 'friends', 'together'],
-            'mystery': ['mystery', 'secret', 'hidden'],
-            'space': ['space', 'planet', 'star', 'galaxy']
-        }
+        try:
+            # Format using Mistral's chat template
+            formatted_prompt = f"<s>[INST] {prompt} [/INST]"
 
-        for theme, keywords in theme_keywords.items():
-            if any(keyword in story_summary.lower() for keyword in keywords):
-                themes.append(theme)
+            inputs = self.summarizer.tokenizer(
+                formatted_prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=1024
+            )
 
-        # Generate suggestions
-        if characters:
-            suggestions.append(f"The Tale of {characters[0]}")
-            if len(characters) > 1:
-                suggestions.append(f"{characters[0]} and {characters[1]}")
+            if torch.cuda.is_available():
+                inputs = {k: v.cuda() for k, v in inputs.items()}
 
-        if themes:
-            suggestions.append(f"A {themes[0].title()} Story")
-            suggestions.append(f"The Great {themes[0].title()}")
+            with torch.no_grad():
+                outputs = self.summarizer.model.generate(
+                    **inputs,
+                    max_new_tokens=60,
+                    temperature=0.7,  # Slightly higher for creativity
+                    do_sample=True,
+                    pad_token_id=self.summarizer.tokenizer.eos_token_id,
+                    eos_token_id=self.summarizer.tokenizer.eos_token_id
+                )
 
-        # Generic suggestions
-        suggestions.extend([
-            "An Amazing Adventure",
-            "A Wonderful Tale",
-            "The Journey Begins"
-        ])
+            response = self.summarizer.tokenizer.decode(
+                outputs[0][inputs['input_ids'].shape[1]:],
+                skip_special_tokens=True
+            ).strip()
 
-        # Validate and return non-toxic titles
-        valid_suggestions = []
-        for title in suggestions[:5]:  # Limit to 5 suggestions
-            if self.validate_title(title):
-                valid_suggestions.append(title)
+            # Extract titles from response
+            lines = [line.strip() for line in response.split('\n') if line.strip()]
+            suggested_titles = []
 
-        return valid_suggestions
+            for line in lines[:3]:  # Take first 3 lines
+                # Clean up the title (remove numbers, quotes, etc.)
+                title = re.sub(r'^\d+\.?\s*', '', line)  # Remove leading numbers
+                title = title.strip('"\'')  # Remove quotes
+                title = title[:self.history_config['title_max_length']]  # Truncate if needed
+
+                if title and self.validate_title(title):
+                    suggested_titles.append(title)
+
+            # Add fallback titles if needed
+            if len(suggested_titles) < 3:
+                fallback_titles = ["An Amazing Adventure", "A Wonderful Tale", "The Journey Begins"]
+                for fallback in fallback_titles:
+                    if len(suggested_titles) < 3 and self.validate_title(fallback):
+                        suggested_titles.append(fallback)
+
+            return suggested_titles
+
+        except Exception as e:
+            print(f"Title suggestion failed: {e}")
+            # Fallback to simple extraction
+            words = story_summary.split()
+            if len(words) > 3:
+                return ["An Amazing Adventure", "A Wonderful Tale", "The Journey Begins"]
+            return ["My Story"]
 
     def get_user_titles(self, username: str) -> List[str]:
         """Get list of story titles for a user."""
@@ -185,7 +276,7 @@ class StoryHistoryManager:
 
         # Handle title
         if title is None:
-            # Suggest titles
+            # Suggest titles using Mistral
             suggestions = self.suggest_titles(summary)
 
             if suggestions:
@@ -209,7 +300,7 @@ class StoryHistoryManager:
 
         # Validate title
         if not self.validate_title(title):
-            print("❌ Title contains inappropriate content or is too long.")
+            print("Title contains inappropriate content or is too long.")
             return False
 
         # Check if title already exists
@@ -249,7 +340,7 @@ class StoryHistoryManager:
         success = self.save_user_history(username, history)
 
         if success:
-            print(f"✅ Story saved as '{title}'")
+            print(f"Story saved as '{title}'")
 
         return success
 
@@ -259,7 +350,7 @@ class StoryHistoryManager:
         existing_story = self.get_story_by_title(username, title)
 
         if not existing_story:
-            print(f"❌ Story '{title}' not found.")
+            print(f"Story '{title}' not found.")
             return False
 
         # Combine stories
@@ -294,7 +385,7 @@ class StoryHistoryManager:
             success = self.save_user_history(username, history)
 
             if success:
-                print(f"✅ Story '{title}' updated with continuation")
+                print(f"Story '{title}' updated with continuation")
 
             return success
 
@@ -306,13 +397,13 @@ class StoryHistoryManager:
         history = [entry for entry in history if entry['title'] != title]
 
         if len(history) == original_length:
-            print(f"❌ Story '{title}' not found.")
+            print(f"Story '{title}' not found.")
             return False
 
         success = self.save_user_history(username, history)
 
         if success:
-            print(f"✅ Story '{title}' deleted")
+            print(f"Story '{title}' deleted")
 
         return success
 

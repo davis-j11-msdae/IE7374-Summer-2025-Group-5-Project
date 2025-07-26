@@ -16,8 +16,7 @@ This system creates personalized stories for users of different ages by:
 ```
 IE7574-Summer-2025-Group-5-Project/
 ├── configs/
-│   ├── model_config.yaml          # Model and training configuration
-│   └── deepspeed_config.json      # DeepSpeed optimization settings
+│   └── model_config.yaml          # Model and training configuration
 ├── utils/
 │   ├── helpers.py                 # Common utility functions
 │   ├── environment_check.py       # System validation
@@ -27,6 +26,7 @@ IE7574-Summer-2025-Group-5-Project/
 │   ├── data_tokenizer.py          # Dataset tokenization
 │   ├── eval.py                    # Story evaluation and classification
 │   ├── train.py                   # Model fine-tuning
+│   ├── hyperparameter_tuning.py   # Optimization of Model Hyperparameters
 │   ├── history.py                 # User history management
 │   ├── model_runner.py            # Story generation with authentication
 │   └── samples.py                 # Sample evaluation pipeline
@@ -37,7 +37,7 @@ IE7574-Summer-2025-Group-5-Project/
 │   ├── evaluated/                 # Quality-assessed stories
 │   └── users/                     # User authentication data
 ├── models/
-│   ├── mixtral-8x7b-base/         # Base Mixtral model
+│   ├── mixtral-7b-base/           # Base Mixtral model
 │   └── tuned_story_llm/           # Fine-tuned storytelling model
 ├── outputs/
 │   ├── user_history/              # Individual user story histories
