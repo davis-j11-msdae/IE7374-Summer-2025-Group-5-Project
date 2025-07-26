@@ -56,7 +56,7 @@ IE7374-Summer-2025-Group-5-Project/
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd IE7574-Summer-2025-Group-5-Project
+cd IE7374-Summer-2025-Group-5-Project
 
 # Install dependencies
 pip install -r requirements.txt
