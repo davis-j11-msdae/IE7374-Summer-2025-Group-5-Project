@@ -218,7 +218,7 @@ def prepare_datasets_for_training(tokenized_datasets):
         return example
 
     tokenized_datasets = tokenized_datasets.map(add_labels)
-    torch_columns = ["input_ids", "attention_mask", "labels"]
+    torch_columns = ["input_ids", "attention_mask", "labels", "length"]
     tokenized_datasets.set_format("torch", columns=torch_columns)
 
     return tokenized_datasets
