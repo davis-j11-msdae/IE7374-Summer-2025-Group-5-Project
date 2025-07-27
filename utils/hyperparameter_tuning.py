@@ -3,11 +3,12 @@ import sys
 import copy
 import gc
 import json
+import torch
 from datetime import datetime
 
 # Add parent directory to path to import from utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.helpers import set_cwd
+from utils.helpers import set_cwd, load_datasets
 
 # Get current working directory for path operations
 cwd = set_cwd()
@@ -18,13 +19,38 @@ def thorough_memory_cleanup():
     gc.collect()
 
 
-class HyperparameterTuner:
-    """Hyperparameter tuning orchestrator that calls training functions."""
+def get_gpu_memory_gb():
+    """Get GPU memory in GB."""
+    if torch.cuda.is_available():
+        return torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    return 0
 
-    def __init__(self, base_config, base_model_path, tokenized_path):
+
+def get_tuning_config(target_effective_batch_size=16):
+    """Get batch_size and gradient_accumulation for target effective batch size."""
+    gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+
+    if gpu_memory_gb >= 40:  # A100
+        return {
+            'batch_size': target_effective_batch_size,
+            'gradient_accumulation_steps': 1
+        }
+    else:  # 10GB GPU
+        limited_gpu_batch_size = 4
+        return {
+            'batch_size': limited_gpu_batch_size,
+            'gradient_accumulation_steps': target_effective_batch_size // limited_gpu_batch_size
+        }
+
+
+
+class HyperparameterTuner:
+    """Hyperparameter tuning orchestrator driven by config search_spaces."""
+
+    def __init__(self, base_config, base_model_path, tokenized_datasets):
         self.base_config = copy.deepcopy(base_config)
         self.base_model_path = base_model_path
-        self.tokenized_path = tokenized_path
+        self.tokenized_datasets = tokenized_datasets
         self.optimization_history = {}
 
         # Setup persistent storage
@@ -35,56 +61,12 @@ class HyperparameterTuner:
         self.results_file = os.path.join(self.results_dir, "trial_results.json")
         self.final_results_file = os.path.join(self.results_dir, "final_optimal_hyperparams.json")
 
+        # Load search spaces from config
         tuning_config = base_config.get('hyperparameter_tuning', {})
         self.search_spaces = tuning_config.get('search_spaces', {})
 
-        # Define hyperparameter optimization order and memory efficiency defaults
-        self.tuning_order = [
-            {
-                'name': 'learning_rate',
-                'search_key': 'learning_rate',
-                'memory_efficient_default': lambda values: min(values),
-                'config_path': ['training', 'learning_rate']
-            },
-            {
-                'name': 'lora',
-                'search_key': 'lora_rank_alpha',
-                'memory_efficient_default': lambda values: min(values, key=lambda x: x['r']),
-                'config_paths': [
-                    (['lora', 'r'], 'r'),
-                    (['lora', 'lora_alpha'], 'alpha')
-                ]
-            },
-            {
-                'name': 'batch_size',
-                'search_key': 'batch_size',
-                'memory_efficient_default': lambda values: min(values),
-                'config_path': ['training', 'batch_size']
-            },
-            {
-                'name': 'lora_dropout',
-                'search_key': 'lora_dropout',
-                'memory_efficient_default': lambda values: max(values),
-                'config_path': ['lora', 'lora_dropout']
-            },
-            {
-                'name': 'weight_decay',
-                'search_key': 'weight_decay',
-                'memory_efficient_default': lambda values: min(values),
-                'config_path': ['training', 'weight_decay']
-            },
-            {
-                'name': 'warmup_steps',
-                'search_key': 'warmup_steps',
-                'memory_efficient_default': lambda values: min(values),
-                'config_path': ['training', 'warmup_steps']
-            }
-        ]
-
-        # Validate search spaces
-        for param in self.tuning_order:
-            if param['search_key'] not in self.search_spaces:
-                raise ValueError(f"Missing search space for {param['search_key']} in hyperparameter_tuning config")
+        if not self.search_spaces:
+            raise ValueError("No search_spaces found in hyperparameter_tuning config")
 
         # Load existing results
         self.trial_results = self._load_trial_results()
@@ -94,7 +76,10 @@ class HyperparameterTuner:
         if self.session_state.get('optimization_history'):
             self.optimization_history = self.session_state['optimization_history']
 
-        print(f"Loaded hyperparameter search spaces for Mistral 7B:")
+        gpu_memory_gb = get_gpu_memory_gb()
+        gpu_type = "A100" if gpu_memory_gb >= 40 else f"{gpu_memory_gb:.0f}GB GPU"
+
+        print(f"Loaded hyperparameter search spaces for {gpu_type}:")
         for space_name, space_values in self.search_spaces.items():
             print(f"  {space_name}: {space_values}")
 
@@ -161,7 +146,8 @@ class HyperparameterTuner:
             'completion_timestamp': datetime.now().isoformat(),
             'total_trials_run': len(self.trial_results),
             'base_config_hash': hash(str(self.base_config)),
-            'model_used': 'mistral-7b-instruct-v0.3'
+            'model_used': 'mistral-7b-instruct-v0.3',
+            'gpu_memory_gb': get_gpu_memory_gb()
         }
 
         with open(self.final_results_file, 'w') as f:
@@ -180,35 +166,31 @@ class HyperparameterTuner:
                     completed[trial_key] = score
         return completed
 
-    def _set_nested_config_value(self, config, path, value):
-        """Set a nested configuration value using a path list."""
-        current = config
-        for key in path[:-1]:
-            current = current[key]
-        current[path[-1]] = value
-
-    def _create_trial_hyperparams(self, param_config, test_value):
-        """Create hyperparameters dict for a trial."""
+    def _create_trial_hyperparams(self, current_param_name, test_value):
+        """Create hyperparameters dict for a trial based on config-driven approach."""
         hyperparams = {}
 
-        # Add all previously optimized parameters
-        for completed_param in self.tuning_order:
-            param_name = completed_param['name']
+        # Get search spaces directly from config
+        search_spaces = self.base_config['hyperparameter_tuning']['search_spaces']
 
+        # Add all parameters from search spaces
+        for param_name in search_spaces.keys():
             if param_name in self.optimization_history:
+                # Use previously optimized value
                 hyperparams[param_name] = self.optimization_history[param_name]
-            elif param_name == param_config['name']:
+            elif param_name == current_param_name:
                 # This is the parameter being tested
                 hyperparams[param_name] = test_value
+            elif 'lora' in param_name:
+                hyperparams[param_name] = self.base_config['lora'][param_name]
             else:
-                # Use memory efficient default for parameters not yet optimized
-                search_values = self.search_spaces[completed_param['search_key']]
-                hyperparams[param_name] = completed_param['memory_efficient_default'](search_values)
+                hyperparams[param_name] = self.base_config['training'][param_name]
 
         return hyperparams
 
+
     def _call_training_for_evaluation(self, hyperparams, trial_name):
-        """Call generic training function for hyperparameter evaluation."""
+        """Call training function for hyperparameter evaluation."""
         print(f"  Testing {trial_name}...")
 
         try:
@@ -222,14 +204,17 @@ class HyperparameterTuner:
 
             print(f"    Running Mistral 7B training...")
 
-            # Call generic training function with tuning indicator
-            validation_loss = train.run_training_generic(
+            # Call training function with hyperparameters
+            validation_loss = train.run_training_core(
                 config=self.base_config,
                 hyperparams=hyperparams,
                 base_model_path=self.base_model_path,
-                tokenized_path=self.tokenized_path,
+                tokenized_datasets=self.tokenized_datasets,
                 output_dir=trial_output_dir,
-                tuning_ind=1  # Indicates this is a tuning trial
+                training_state='tuning',
+                save_strategy='no',
+                save_total_limit=0,
+                load_best_model_at_end=False
             )
 
             print(f"    Validation Loss: {validation_loss:.4f}")
@@ -242,35 +227,81 @@ class HyperparameterTuner:
             thorough_memory_cleanup()
             return validation_loss
 
-        except SyntaxError as e:
-            print(f"    Syntax error in train.py: {e}")
-            thorough_memory_cleanup()
-            return float('inf')
-        except ImportError as e:
-            print(f"    Import error: {e}")
-            thorough_memory_cleanup()
-            return float('inf')
         except Exception as e:
-            print(f"    Trial failed: {str(e)[:100]}...")
-            thorough_memory_cleanup()
-            return float('inf')
+            print(f"    Trial failed: {str(e)[:500]}...")
+            print(f"    Error type: {type(e).__name__}")
+            print(f"    Trial name: {trial_name}")
+            print(f"    Hyperparams: {hyperparams}")
+            
+            # Print more detailed error information
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"    Full traceback (last 10 lines):")
+            traceback_lines = error_details.split('\n')
+            for line in traceback_lines[-12:-1]:  # Last 10 lines plus error
+                if line.strip():
+                    print(f"      {line}")
+            
+            # Check for specific common errors
+            error_str = str(e).lower()
+            if 'cuda' in error_str and 'memory' in error_str:
+                print(f"    >> CUDA memory error detected - may need smaller batch size")
+            elif 'length' in error_str:
+                print(f"    >> Length error detected - likely dataset formatting issue")
+            elif 'shape' in error_str or 'size' in error_str:
+                print(f"    >> Shape/size mismatch error - tensor dimension problem")
+            elif 'device' in error_str:
+                print(f"    >> Device error - model/data device mismatch")
+            elif 'file' in error_str or 'path' in error_str:
+                print(f"    >> File system error - Google Drive mount issue")
 
-    def _tune_hyperparameter(self, param_config):
+        thorough_memory_cleanup()
+
+        return float('inf')
+
+    def _handle_special_parameters(self, param_name, value, hyperparams):
+        """Handle special parameter configurations like effective_batch_size and lora_rank."""
+
+        if param_name == 'effective_batch_size':
+            # Convert effective batch size to actual batch configuration
+            batch_config = get_tuning_config(value)
+            hyperparams['batch_size'] = batch_config['batch_size']
+            hyperparams['gradient_accumulation_steps'] = batch_config['gradient_accumulation_steps']
+
+        elif param_name == 'lora_rank':
+            # Set both rank and alpha (alpha = 2x rank)
+            hyperparams['lora_rank'] = value
+            hyperparams['lora_alpha'] = value * 2
+            print(f"    LoRA rank {value} -> alpha={value * 2}")
+
+    def _format_optimization_result(self, param_name, value, hyperparams):
+        """Format the optimization result based on parameter type."""
+
+        if param_name == 'effective_batch_size':
+            batch_config = get_tuning_config(value)
+            hyperparams['batch_size'] = batch_config['batch_size']
+            hyperparams['gradient_accumulation_steps'] = batch_config['gradient_accumulation_steps']
+            hyperparams['effective_batch_size'] = value
+
+        elif param_name == 'lora_rank':
+            if isinstance(value, dict):
+                rank_value = value.get('lora_rank', value.get('r', 16))
+            else:
+                rank_value = value
+            hyperparams['lora_rank'] = rank_value
+            hyperparams['lora_alpha'] = rank_value * 2
+
+
+    def _tune_hyperparameter(self, param_name, search_values):
         """Generic function to tune any hyperparameter."""
-        param_name = param_config['name']
-        search_key = param_config['search_key']
-        phase = param_name
-
-        print(f"\nPhase: Tuning {param_name} for Mistral 7B...")
-
+        print(f"\nPhase: Tuning {param_name}...")
         # Check if already completed
         if param_name in self.optimization_history:
             print(f"  {param_name} already completed = {self.optimization_history[param_name]}")
             return self.optimization_history[param_name]
 
-        completed_trials = self._get_completed_trials(phase)
+        completed_trials = self._get_completed_trials(param_name)
         best_value, best_score = None, float('inf')
-        search_values = self.search_spaces[search_key]
 
         for value in search_values:
             # Create trial key
@@ -288,25 +319,32 @@ class HyperparameterTuner:
                 continue
 
             # Create hyperparameters for this trial
-            hyperparams = self._create_trial_hyperparams(param_config, value)
+            hyperparams = self._create_trial_hyperparams(param_name, value)
+
+            # Handle special parameter configurations
+            self._handle_special_parameters(param_name, value, hyperparams)
 
             # Run trial
             score = self._call_training_for_evaluation(hyperparams, f"{param_name}={value}")
 
             # Save result
-            self._save_trial_result(phase, trial_key, hyperparams, score)
+            self._save_trial_result(param_name, trial_key, hyperparams, score)
 
             if score < best_score:
                 best_value, best_score = value, score
 
             thorough_memory_cleanup()
 
+        # Return the best value directly without formatting
         return best_value
 
     def tune_sequential(self):
-        """Run sequential hyperparameter optimization for Mistral 7B."""
-        print("\nSTARTING SEQUENTIAL HYPERPARAMETER TUNING FOR MISTRAL 7B")
+        """Run sequential hyperparameter optimization based on config."""
+        print("\nSTARTING SEQUENTIAL HYPERPARAMETER TUNING")
         print("=" * 60)
+        print(f"Training samples: {len(self.tokenized_datasets['train'])}")
+        gpu_memory_gb = get_gpu_memory_gb()
+        print(f"GPU Memory: {gpu_memory_gb:.1f}GB")
 
         thorough_memory_cleanup()
 
@@ -316,11 +354,10 @@ class HyperparameterTuner:
             for param, value in self.optimization_history.items():
                 print(f"  Already optimized: {param} = {value}")
 
-        # Tune each hyperparameter in order
-        for param_config in self.tuning_order:
-            param_name = param_config['name']
+        # Tune each hyperparameter in order defined by config
+        for param_name, search_values in self.search_spaces.items():
 
-            best_value = self._tune_hyperparameter(param_config)
+            best_value = self._tune_hyperparameter(param_name, search_values)
             self.optimization_history[param_name] = best_value
             self._save_session_state(f"{param_name}_completed")
             print(f"Best {param_name}: {best_value}")
@@ -336,25 +373,27 @@ class HyperparameterTuner:
 
     def _print_optimization_summary(self):
         """Print summary of optimization results."""
-        print("\nOPTIMIZATION SUMMARY (Mistral 7B):")
+        print("\nOPTIMIZATION SUMMARY:")
         print("-" * 40)
-        print(f"Learning Rate:     {self.optimization_history['learning_rate']}")
-        print(f"LoRA Rank:         {self.optimization_history['lora']['r']}")
-        print(f"LoRA Alpha:        {self.optimization_history['lora']['alpha']}")
-        print(f"Batch Size:        {self.optimization_history['batch_size']}")
-        print(f"LoRA Dropout:      {self.optimization_history['lora_dropout']}")
-        print(f"Weight Decay:      {self.optimization_history['weight_decay']}")
-        print(f"Warmup Steps:      {self.optimization_history['warmup_steps']}")
+
+        for param_name, value in self.optimization_history.items():
+            if isinstance(value, dict):
+                print(f"{param_name.replace('_', ' ').title()}:")
+                for sub_key, sub_value in value.items():
+                    print(f"  {sub_key}: {sub_value}")
+            else:
+                print(f"{param_name.replace('_', ' ').title()}: {value}")
+
         print(f"\nResults saved to: {self.results_dir}")
 
 
 def run_hyperparameter_tuning(config, base_model_path, tokenized_path):
-    """Run hyperparameter tuning using training function calls for Mistral 7B."""
-    print("\nHYPERPARAMETER TUNING ENABLED FOR MISTRAL 7B")
+    """Run hyperparameter tuning using config-driven approach."""
+    print("\nHYPERPARAMETER TUNING ENABLED")
     print("=" * 60)
-
+    print(tokenized_path)
     thorough_memory_cleanup()
-
+    gpu_memory_gb = get_gpu_memory_gb()
     # Check for existing results and prompt user
     results_dir = os.path.join(cwd, "hyperparameter_results")
     final_results_file = os.path.join(results_dir, "final_optimal_hyperparams.json")
@@ -368,19 +407,20 @@ def run_hyperparameter_tuning(config, base_model_path, tokenized_path):
                 results = json.load(f)
             completion_time = results.get('completion_timestamp', 'unknown')
             model_used = results.get('model_used', 'unknown')
+            gpu_memory = results.get('gpu_memory_gb', 'unknown')
             print(f"Model: {model_used}")
+            print(f"GPU: {gpu_memory}GB")
             print(f"Completed at: {completion_time}")
             print("Optimal hyperparameters found:")
             opt_params = results.get('optimal_hyperparameters', {})
             if opt_params:
-                print(f"  Learning Rate: {opt_params.get('learning_rate', 'N/A')}")
-                if 'lora' in opt_params:
-                    print(f"  LoRA Rank: {opt_params['lora'].get('r', 'N/A')}")
-                    print(f"  LoRA Alpha: {opt_params['lora'].get('alpha', 'N/A')}")
-                print(f"  Batch Size: {opt_params.get('batch_size', 'N/A')}")
-                print(f"  LoRA Dropout: {opt_params.get('lora_dropout', 'N/A')}")
-                print(f"  Weight Decay: {opt_params.get('weight_decay', 'N/A')}")
-                print(f"  Warmup Steps: {opt_params.get('warmup_steps', 'N/A')}")
+                for param_name, param_value in opt_params.items():
+                    if isinstance(param_value, dict):
+                        print(f"  {param_name}:")
+                        for sub_key, sub_value in param_value.items():
+                            print(f"    {sub_key}: {sub_value}")
+                    else:
+                        print(f"  {param_name}: {param_value}")
         except Exception as e:
             print(f"Error reading results: {e}")
 
@@ -422,22 +462,22 @@ def run_hyperparameter_tuning(config, base_model_path, tokenized_path):
             print("Resuming hyperparameter tuning...")
 
     else:
-        print("Starting fresh hyperparameter tuning for Mistral 7B...")
+        print(f"Starting fresh hyperparameter tuning on {gpu_memory_gb:.1f}GB GPU...")
 
-    print("Setting up hyperparameter tuning orchestration...")
+    print("Setting up config-driven hyperparameter tuning...")
 
     # Run hyperparameter tuning orchestration
     tuner = HyperparameterTuner(
         base_config=config,
         base_model_path=base_model_path,
-        tokenized_path=tokenized_path
+        tokenized_datasets=load_datasets(tokenized_path,'sample')
     )
 
     optimal_hyperparams = tuner.tune_sequential()
 
     thorough_memory_cleanup()
 
-    print(f"\nHYPERPARAMETER TUNING COMPLETE FOR MISTRAL 7B!")
+    print(f"\nHYPERPARAMETER TUNING COMPLETE!")
     print(f"Results stored in: {tuner.results_dir}")
 
     return optimal_hyperparams

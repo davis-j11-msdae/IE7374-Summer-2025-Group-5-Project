@@ -8,6 +8,8 @@ import re
 from datetime import datetime
 import importlib.util
 
+from datasets import load_from_disk, Dataset, DatasetDict
+
 def set_cwd():
     if importlib.util.find_spec("google.colab") is not None:
         cwd = os.getcwd()
@@ -128,3 +130,39 @@ def log_operation_status(operation: str, status: str = "started"):
     """Log operation status with timestamp."""
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {operation} {status}")
+
+def add_labels(example):
+    example["labels"] = example["input_ids"].copy()
+    return example
+
+def load_datasets(tokenized_path, segment):
+    """Load tokenized datasets with fallback loading."""
+    try:
+        tokenized_datasets = load_from_disk(tokenized_path)
+        print(f"Datasets loaded: {list(tokenized_datasets.keys())}")
+    except Exception as e:
+        print(f"Direct load failed: {e}")
+        dataset_dict = {}
+        for split in ["train", "validation", "test"]:
+            split_path = os.path.join(tokenized_path, split)
+            if os.path.exists(split_path):
+                dataset_dict[split] = Dataset.load_from_disk(split_path)
+                print(f"Loaded {split}: {len(dataset_dict[split])} examples")
+        tokenized_datasets = DatasetDict(dataset_dict)
+    if segment=="sample":
+        train_indices = [i for i, ex in enumerate(tokenized_datasets['train']) if ex.get('hyperparameter_tuning', True)]
+        if train_indices:
+            tokenized_datasets['train'] = tokenized_datasets['train'].select(train_indices)
+            print(f"  Train samples: {len(train_indices):,}")
+
+        # Filter validation dataset
+        val_indices = [i for i, ex in enumerate(tokenized_datasets['validation']) if
+                       ex.get('hyperparameter_tuning', True)]
+        if val_indices:
+            tokenized_datasets['validation'] = tokenized_datasets['validation'].select(val_indices)
+            print(f"  Validation samples: {len(val_indices):,}")
+    tokenized_datasets = tokenized_datasets.map(add_labels)
+    torch_columns = ["input_ids", "attention_mask", "labels"]
+    tokenized_datasets.set_format("torch", columns=torch_columns)
+
+    return tokenized_datasets

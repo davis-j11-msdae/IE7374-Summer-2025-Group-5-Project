@@ -15,11 +15,24 @@ if importlib.util.find_spec("google.colab") is not None:
 else:
     cwd = os.getcwd().rstrip(r"\src")
 os.chdir(cwd)
+import warnings
 
+# Suppress TensorFlow warnings - these come from detoxify using TensorFlow backend
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN for consistent results
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'   # Suppress TensorFlow INFO/WARNING messages
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'  # Prevent tokenizer warnings
+
+# Filter specific deprecation warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="tf_keras")
+warnings.filterwarnings("ignore", message=".*tf.losses.sparse_softmax_cross_entropy.*")
+warnings.filterwarnings("ignore", message=".*torch.utils.checkpoint.*use_reentrant.*")
 # Add utils to path for imports
 sys.path.append(os.path.join(cwd, 'utils'))
-from helpers import log_operation_status
+from helpers import log_operation_status, load_config
 
+config = load_config()
+base_model_path = os.path.join(config['paths']['models'], 'mistral-7b-base')
+tokenized_path = os.path.join(config['paths']['data_tokenized'], 'datasets')
 
 def authenticate_user():
     """Authenticate user and return user info."""
@@ -205,17 +218,12 @@ def run_hyperparameter_tuning():
     if confirm == 'y':
         try:
             from hyperparameter_tuning import run_hyperparameter_tuning
-            from helpers import load_config
-
-            config = load_config()
-            base_model_path = os.path.join(config['paths']['models'], 'mistral-7b-base')
-            tokenized_path = os.path.join(config['paths']['data_tokenized'], 'datasets')
 
             if not os.path.exists(tokenized_path):
                 print(f"Tokenized datasets not found at: {tokenized_path}")
                 print("Please run tokenization first (option 4).")
                 input("\nPress Enter to continue...")
-                return
+                returnad
 
             optimal_hyperparams = run_hyperparameter_tuning(config, base_model_path, tokenized_path)
 
@@ -257,47 +265,111 @@ def train_model():
 
     print("\nTraining storytelling model...")
 
-    # Check for optimal hyperparameters
-    optimal_hyperparams = load_optimal_hyperparameters()
+    # Define paths
+    from helpers import load_config,load_datasets
+    config = load_config()
+    output_dir = os.path.join(config['paths']['models'], 'tuned_story_llm')
+    tokenized_path = os.path.join(config['paths']['data_tokenized'], 'datasets')
 
-    if optimal_hyperparams:
-        print("Found optimal hyperparameters from tuning:")
-        print(f"  Learning Rate: {optimal_hyperparams['learning_rate']}")
-        print(f"  LoRA Rank: {optimal_hyperparams['lora']['r']}")
-        print(f"  LoRA Alpha: {optimal_hyperparams['lora']['alpha']}")
-        print(f"  Batch Size: {optimal_hyperparams['batch_size']}")
-        print(f"  LoRA Dropout: {optimal_hyperparams['lora_dropout']}")
-        print(f"  Weight Decay: {optimal_hyperparams['weight_decay']}")
-        print(f"  Warmup Steps: {optimal_hyperparams['warmup_steps']}")
+    # Check if tokenized data exists
+    if not os.path.exists(tokenized_path):
+        print(f"Tokenized datasets not found at: {tokenized_path}")
+        print("Please run tokenization first (option 4).")
+        input("\nPress Enter to continue...")
+        return
 
-        use_tuned = input("\nUse these tuned hyperparameters? (Y/n): ").strip().lower()
-        if use_tuned == 'n':
-            optimal_hyperparams = None
-            print("Will use default hyperparameters from config file")
+    # Check for existing trained model
+    if os.path.exists(output_dir):
+        # Import training state check function
+        sys.path.insert(0, cwd)
+        import train
+        training_state, training_info = train.check_training_state(output_dir)
+
+        if training_state == "completed" or training_state == "early_stopped":
+            print("Model training already completed.")
+            if training_state == "early_stopped":
+                print("Previous training ended due to early stopping.")
+
+            restart = input("\nRestart model training from scratch? (y/N): ").strip().lower()
+            if restart != 'y':
+                print("Training cancelled.")
+                input("\nPress Enter to continue...")
+                return
+            else:
+                print("Removing existing model to restart training...")
+                import shutil
+                shutil.rmtree(output_dir)
+                training_state = "new"
+
+        elif training_state == "resumable":
+            print("Incomplete training found.")
+            resume = input("\nResume training for additional 3 epochs? (Y/n): ").strip().lower()
+            if resume == 'n':
+                print("Training cancelled.")
+                input("\nPress Enter to continue...")
+                return
     else:
-        print("No optimal hyperparameters found.")
-        print("Run hyperparameter tuning first (option 5) or proceed with defaults.")
+        training_state = "new"
 
-        proceed = input("\nProceed with default hyperparameters? (y/N): ").strip().lower()
-        if proceed != 'y':
-            print("Training cancelled.")
-            input("\nPress Enter to continue...")
-            return
+    # Check for optimal hyperparameters if starting new training
+    optimal_hyperparams = None
+    if training_state == "new":
+        optimal_hyperparams = load_optimal_hyperparameters()
+
+        if optimal_hyperparams:
+            print("Found optimal hyperparameters from tuning:")
+            for param, value in optimal_hyperparams.items():
+                if isinstance(value, dict):
+                    print(f"  {param.replace('_', ' ').title()}:")
+                    for sub_key, sub_value in value.items():
+                        print(f"    {sub_key}: {sub_value}")
+                else:
+                    print(f"  {param.replace('_', ' ').title()}: {value}")
+
+            use_tuned = input("\nUse these optimized hyperparameters? (Y/n): ").strip().lower()
+            if use_tuned == 'n':
+                optimal_hyperparams = None
+                print("Will use default hyperparameters from config file")
+        else:
+            print("WARNING: No optimal hyperparameters found.")
+            print("For best results, run hyperparameter tuning first (option 5).")
+
+            proceed = input("\nProceed with default hyperparameters? (y/N): ").strip().lower()
+            if proceed != 'y':
+                print("Training cancelled.")
+                input("\nPress Enter to continue...")
+                return
 
     print("\nThis will:")
     print("  - Load Mistral 7B Instruct v0.3 base model")
     print("  - Fine-tune on processed story datasets")
     print("  - Use optimized memory settings for 10GB VRAM")
+    if training_state == "resumable":
+        print("  - Resume from previous checkpoint for 3 additional epochs")
+    elif optimal_hyperparams:
+        print("  - Use optimized hyperparameters")
+    else:
+        print("  - Use default hyperparameters")
     print("  - Save fine-tuned model")
     print("\nNote: Requires 8-10GB GPU memory and time (2-3 hours)")
 
     confirm = input("\nProceed with training? (y/N): ").strip().lower()
     if confirm == 'y':
         try:
-            # Import and run the training script with hyperparameters
+            # Import and run the training script
             sys.path.insert(0, cwd)
             import train
-            train.main(optimal_hyperparams)
+            train.run_training_core(
+                config=config,
+                hyperparams=optimal_hyperparams,
+                base_model_path=base_model_path,
+                tokenized_datasets=load_datasets(tokenized_path,training_state),
+                output_dir=output_dir,
+                training_state=training_state,
+                save_strategy='epoch',
+                save_total_limit=5,
+                load_best_model_at_end=True
+            )
         except Exception as e:
             print(f"Training failed: {e}")
             import traceback

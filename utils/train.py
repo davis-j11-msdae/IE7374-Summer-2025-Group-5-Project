@@ -1,16 +1,26 @@
 import os
 import sys
-import yaml
 import json
-import shutil
-from datasets import load_from_disk, Dataset, DatasetDict
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer,
-    DataCollatorForLanguageModeling, BitsAndBytesConfig, EarlyStoppingCallback
+    DataCollatorForLanguageModeling, EarlyStoppingCallback
 )
-from transformers.integrations import TensorBoardCallback
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 import torch
+
+import warnings
+
+from utils.helpers import set_cwd, load_datasets
+
+# Suppress TensorFlow warnings - these come from detoxify using TensorFlow backend
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN for consistent results
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'   # Suppress TensorFlow INFO/WARNING messages
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'  # Prevent tokenizer warnings
+
+# Filter specific deprecation warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="tf_keras")
+warnings.filterwarnings("ignore", message=".*tf.losses.sparse_softmax_cross_entropy.*")
+warnings.filterwarnings("ignore", message=".*torch.utils.checkpoint.*use_reentrant.*")
 
 # Add parent directory to path to import from utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -95,41 +105,31 @@ def configs_match(current_config, saved_info):
     return current_hash == saved_hash
 
 
-def apply_hyperparameters_to_config(config, optimal_hyperparams):
-    """Apply optimal hyperparameters to the config."""
-    if not optimal_hyperparams:
-        return config
+def get_hardware_batch_config(config):
+    """Get hardware-appropriate batch configuration based on effective batch size."""
 
-    print("Applying hyperparameters to training config...")
+    effective_batch_size = config['training']['effective_batch_size']
+    limited_gpu_batch_size = config['training']['limited_gpu_batch_size']
 
-    if 'learning_rate' in optimal_hyperparams:
-        config['training']['learning_rate'] = optimal_hyperparams['learning_rate']
-        print(f"  Learning Rate: {optimal_hyperparams['learning_rate']}")
+    if torch.cuda.get_device_properties(0).total_memory / (1024 ** 3) if torch.cuda.is_available() else 0 >= 40:  # A100
+        return {
+            'batch_size': effective_batch_size,
+            'gradient_accumulation_steps': 1
+        }
+    else:  # 10GB GPU or smaller
+        return {
+            'batch_size': limited_gpu_batch_size,
+            'gradient_accumulation_steps': effective_batch_size // limited_gpu_batch_size
+        }
 
-    if 'lora' in optimal_hyperparams:
-        config['lora']['r'] = optimal_hyperparams['lora']['r']
-        config['lora']['lora_alpha'] = optimal_hyperparams['lora']['alpha']
-        print(f"  LoRA Rank: {optimal_hyperparams['lora']['r']}")
-        print(f"  LoRA Alpha: {optimal_hyperparams['lora']['alpha']}")
-
-    if 'batch_size' in optimal_hyperparams:
-        config['training']['batch_size'] = optimal_hyperparams['batch_size']
-        print(f"  Batch Size: {optimal_hyperparams['batch_size']}")
-
-    if 'lora_dropout' in optimal_hyperparams:
-        config['lora']['lora_dropout'] = optimal_hyperparams['lora_dropout']
-        print(f"  LoRA Dropout: {optimal_hyperparams['lora_dropout']}")
-
-    if 'weight_decay' in optimal_hyperparams:
-        config['training']['weight_decay'] = optimal_hyperparams['weight_decay']
-        print(f"  Weight Decay: {optimal_hyperparams['weight_decay']}")
-
-    if 'warmup_steps' in optimal_hyperparams:
-        config['training']['warmup_steps'] = optimal_hyperparams['warmup_steps']
-        print(f"  Warmup Steps: {optimal_hyperparams['warmup_steps']}")
-
-    print("Hyperparameters applied successfully")
-    return config
+def _set_nested_config_value(config, path, value):
+    """Set a nested configuration value using a path list."""
+    current = config
+    for key in path[:-1]:
+        if key not in current:
+            current[key] = {}
+        current = current[key]
+    current[path[-1]] = value
 
 
 class EarlyStoppingCallbackCustom(EarlyStoppingCallback):
@@ -154,147 +154,159 @@ class EarlyStoppingCallbackCustom(EarlyStoppingCallback):
                 print(
                     f"Early stopping triggered - validation loss improved by less than {self.early_stopping_threshold}")
 
+def setup_quantization_config(config):
+    """Setup quantization configuration with Windows compatibility."""
+    quantization_enabled = config.get('quantization', {}).get('enabled', False)
 
-def load_datasets(tokenized_path):
-    """Load tokenized datasets with fallback loading."""
+    if not quantization_enabled:
+        return None
+
     try:
-        tokenized_datasets = load_from_disk(tokenized_path)
-        print(f"Datasets loaded: {list(tokenized_datasets.keys())}")
+        # Try to import bitsandbytes
+        import bitsandbytes as bnb
+        from transformers import BitsAndBytesConfig
+
+        # Test if bitsandbytes is working properly - handle different versions
+        bnb_available = False
+        if hasattr(bnb, 'is_available'):
+            bnb_available = bnb.is_available()
+        else:
+            # For older versions without is_available, try a simple test
+            try:
+                # Test if we can create a simple optimizer (basic functionality test)
+                import torch
+                test_param = torch.nn.Parameter(torch.randn(2, 2))
+                bnb.optim.Adam8bit([test_param], lr=0.001)
+                bnb_available = True
+            except:
+                bnb_available = False
+
+        if not bnb_available:
+            print("BitsAndBytes not available, disabling quantization")
+            return None
+
+        quant_config = config['quantization']
+
+
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=quant_config['load_in_4bit'],
+            bnb_4bit_compute_dtype=getattr(torch, quant_config['bnb_4bit_compute_dtype']),
+            bnb_4bit_quant_type=quant_config['bnb_4bit_quant_type'],
+            bnb_4bit_use_double_quant=quant_config['bnb_4bit_use_double_quant']
+        )
+        print(f"Using 4-bit quantization configuration")
+
+        return quantization_config
+
+    except ImportError:
+        print("BitsAndBytes not installed, disabling quantization")
+        return None
     except Exception as e:
-        print(f"Direct load failed: {e}")
-        dataset_dict = {}
-        for split in ["train", "validation", "test"]:
-            split_path = os.path.join(tokenized_path, split)
-            if os.path.exists(split_path):
-                dataset_dict[split] = Dataset.load_from_disk(split_path)
-                print(f"Loaded {split}: {len(dataset_dict[split])} examples")
-        tokenized_datasets = DatasetDict(dataset_dict)
-
-    return tokenized_datasets
+        print(f"BitsAndBytes setup failed: {e}")
+        print("Continuing without quantization")
+        return None
 
 
-def apply_dataset_reduction(tokenized_datasets, config):
-    """Apply VRAM optimization by reducing dataset size."""
-    training_config = config['training']
-    max_train_samples = training_config.get('max_train_samples', 12000)
-    max_eval_samples = training_config.get('max_eval_samples', 1200)
+def get_device_config():
+    """Determine device configuration based on available GPU memory."""
+    if not torch.cuda.is_available():
+        return "cpu", {}
 
-    if len(tokenized_datasets["train"]) > max_train_samples:
-        print(f"Reducing training set from {len(tokenized_datasets['train'])} to {max_train_samples} samples")
-        tokenized_datasets["train"] = tokenized_datasets["train"].shuffle(seed=42).select(range(max_train_samples))
-
-    if len(tokenized_datasets["validation"]) > max_eval_samples:
-        print(f"Reducing validation set from {len(tokenized_datasets['validation'])} to {max_eval_samples} samples")
-        tokenized_datasets["validation"] = tokenized_datasets["validation"].shuffle(seed=42).select(
-            range(max_eval_samples))
-
-    return tokenized_datasets
-
-
-def filter_preselected_samples(tokenized_datasets):
-    """Filter datasets to use only pre-selected hyperparameter tuning samples."""
-    print("Filtering to use pre-selected tuning samples...")
-
-    # Filter train dataset
-    train_indices = [i for i, ex in enumerate(tokenized_datasets['train']) if ex.get('hyperparameter_tuning', False)]
-    if train_indices:
-        tokenized_datasets['train'] = tokenized_datasets['train'].select(train_indices)
-        print(f"  Train samples: {len(train_indices):,}")
-
-    # Filter validation dataset
-    val_indices = [i for i, ex in enumerate(tokenized_datasets['validation']) if ex.get('hyperparameter_tuning', False)]
-    if val_indices:
-        tokenized_datasets['validation'] = tokenized_datasets['validation'].select(val_indices)
-        print(f"  Validation samples: {len(val_indices):,}")
-
-    return tokenized_datasets
-
-
-def prepare_datasets_for_training(tokenized_datasets):
-    """Prepare datasets with labels and PyTorch format."""
-
-    def add_labels(example):
-        example["labels"] = example["input_ids"].copy()
-        return example
-
-    tokenized_datasets = tokenized_datasets.map(add_labels)
-    torch_columns = ["input_ids", "attention_mask", "labels"]
-    tokenized_datasets.set_format("torch", columns=torch_columns)
-
-    return tokenized_datasets
-
-
-def configure_for_tuning(config):
-    """Configure training parameters for hyperparameter tuning."""
-    config['training']['epochs'] = 1
-    config['training']['eval_steps'] = 50
-    config['training']['save_steps'] = 1000
-    config['training']['logging_steps'] = 999999  # Disable logging
-    config['training']['max_steps'] = 10  # Very limited for quick evaluation
-    return config
-
+    if torch.cuda.get_device_properties(0).total_memory / (1024 ** 3) if torch.cuda.is_available() else 0 >= 40:  # A100 or similar
+        return "auto", {}
+    else:  # 10GB GPU - use sequential device mapping instead of CPU offload
+        device_map = {
+            "model.embed_tokens": 0,
+            "model.layers": 0,  # Keep all layers on GPU for training stability
+            "model.norm": 0,
+            "lm_head": 0
+        }
+        max_memory = {0: "10GB"}  # Use most of available VRAM
+        return device_map, max_memory
 
 def load_model(config, base_model_path, output_dir, training_state):
-    """Load Mistral 7B model with quantization and LoRA configuration."""
+    """Load Mistral 7B model with optional quantization and LoRA configuration."""
     torch.cuda.empty_cache()
 
-    quantization_enabled = config.get('quantization', {}).get('enabled', False)
-    quantization_config = None
+    print(f"Detected GPU memory: {torch.cuda.get_device_properties(0).total_memory / (1024 ** 3) if torch.cuda.is_available() else 0:.1f}GB")
+    # Setup quantization config with Windows compatibility
+    quantization_config = setup_quantization_config(config)
+    device_config = get_device_config()
+    
+    # Handle device configuration based on return values
+    if len(device_config) == 2:
+        device_map, max_memory = device_config
+    else:
+        device_map = device_config[0]
+        max_memory = {}
 
-    if quantization_enabled:
-        quant_config = config['quantization']
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=getattr(torch, quant_config.get('bnb_4bit_compute_dtype', 'float16')),
-            bnb_4bit_quant_type=quant_config.get('bnb_4bit_quant_type', 'nf4'),
-            bnb_4bit_use_double_quant=quant_config.get('bnb_4bit_use_double_quant', True)
-        )
-        print(f"Using 4-bit quantization: {quant_config.get('bnb_4bit_quant_type', 'nf4')}")
+    model_kwargs = {
+        'torch_dtype': torch.float16,
+        'device_map': device_map,
+        'low_cpu_mem_usage': True,
+        'trust_remote_code': True
+    }
+
+    if max_memory:
+        model_kwargs['max_memory'] = max_memory
+
+    # Determine device map based on quantization and VRAM constraints
+    if quantization_config is not None:
+        model_kwargs['quantization_config'] = quantization_config
 
     if training_state == "resumable":
         print("Loading model from checkpoint for resume...")
         model = AutoModelForCausalLM.from_pretrained(
-            output_dir,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            quantization_config=quantization_config,
-            low_cpu_mem_usage=True
+            output_dir, **model_kwargs
         )
     else:
         print("Loading base Mistral 7B model...")
         if os.path.exists(base_model_path):
             model = AutoModelForCausalLM.from_pretrained(
-                base_model_path,
-                torch_dtype=torch.float16,
-                device_map="auto",
-                quantization_config=quantization_config,
-                low_cpu_mem_usage=True
+                base_model_path, **model_kwargs
             )
         else:
             model = AutoModelForCausalLM.from_pretrained(
                 config['model']['base_model'],
                 torch_dtype=torch.float16,
-                device_map="auto",
+                device_map=device_map,
                 quantization_config=quantization_config,
-                low_cpu_mem_usage=True
+                low_cpu_mem_usage=True,
+                trust_remote_code=True
             )
 
-        if quantization_enabled:
-            model = prepare_model_for_kbit_training(model)
+        # Only apply LoRA preparation if quantization is enabled
+        if quantization_config is not None:
+            model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 
-        model.gradient_checkpointing_enable()
+        # Extract LoRA rank value properly
+        lora_rank = config['lora']['lora_rank']
+        if isinstance(lora_rank, dict):
+            lora_rank = lora_rank.get('lora_rank', lora_rank.get('r', 16))
+        
+        # Extract LoRA alpha value properly  
+        lora_alpha = config['lora']['lora_alpha']
+        if isinstance(lora_alpha, dict):
+            lora_alpha = lora_alpha.get('lora_alpha', lora_alpha.get('alpha', 32))
 
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             inference_mode=False,
-            r=config['lora']['r'],
-            lora_alpha=config['lora']['lora_alpha'],
+            r=lora_rank,
+            lora_alpha=lora_alpha,
             lora_dropout=config['lora']['lora_dropout'],
             target_modules=config['lora']['target_modules']
         )
 
         model = get_peft_model(model, lora_config)
-        print(f"Applied LoRA: r={config['lora']['r']}, alpha={config['lora']['lora_alpha']}")
+        print(f"Applied LoRA: rank={lora_rank}, alpha={lora_alpha}")
+
+    # Move model to GPU if it's not already there (fixes meta tensor issue)
+    if not quantization_config and hasattr(model, 'to'):
+        try:
+            model = model.to('cuda' if torch.cuda.is_available() else 'cpu')
+        except Exception as e:
+            print(f"Warning: Could not move model to GPU: {e}")
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
@@ -303,278 +315,157 @@ def load_model(config, base_model_path, output_dir, training_state):
     return model
 
 
-def setup_training_arguments_generic(config, output_dir, tokenized_datasets, tuning_ind):
+def setup_training_arguments_generic(config, output_dir):
     """Setup training arguments for both tuning and production."""
-    batch_size = config['training']['batch_size']
-    if tuning_ind == 1:
-        batch_size = min(batch_size, 2)  # Reduce batch size for tuning
-
-    gradient_accumulation = config['training']['gradient_accumulation_steps']
-    if tuning_ind == 1:
-        gradient_accumulation = max(2, 4 // batch_size)  # Increase accumulation for tuning
-
-    num_epochs = config['training']['epochs']
-
-    print(f"    Training configuration:")
-    print(f"      Batch size: {batch_size}")
-    print(f"      Gradient accumulation: {gradient_accumulation}")
-    print(f"      Epochs: {num_epochs}")
-    print(f"      Max steps: {config['training'].get('max_steps', 'unlimited')}")
-
     training_args = TrainingArguments(
         output_dir=output_dir,
-        num_train_epochs=num_epochs,
-        per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
-        gradient_accumulation_steps=gradient_accumulation,
-        warmup_steps=config['training']['warmup_steps'],
+        num_train_epochs=config['training']['epochs'],
+        per_device_train_batch_size=config['training']['batch_size'],
+        per_device_eval_batch_size=config['training']['batch_size'],
+        gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
         learning_rate=float(config['training']['learning_rate']),
         weight_decay=config['training']['weight_decay'],
         max_grad_norm=config['training']['max_grad_norm'],
-        logging_steps=config['training'].get('logging_steps', 50),
-        evaluation_strategy="epoch" if tuning_ind == 1 else "steps",
-        eval_steps=config['training'].get('eval_steps', 200),
-        save_strategy="no" if tuning_ind == 1 else "steps",
-        save_steps=config['training'].get('save_steps', 400),
-        save_total_limit=3 if tuning_ind == 0 else 0,
-        load_best_model_at_end=tuning_ind == 0,
+        logging_steps=999999,  # Disable logging for all training
+        eval_strategy='epoch',  # Always use epoch-based evaluation
+        save_strategy=config['training']['save_strategy'],
+        save_total_limit=config['training']['save_total_limit'],
+        load_best_model_at_end=config['training']['load_best_model_at_end'],
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         fp16=True,
-        dataloader_num_workers=2 if tuning_ind == 0 else 0,
-        dataloader_pin_memory=tuning_ind == 0,
-        group_by_length=tuning_ind == 0,
-        report_to="none" if tuning_ind == 1 else ["tensorboard"],
-        logging_dir=os.path.join(output_dir, "logs") if tuning_ind == 0 else None,
+        dataloader_num_workers=2,
+        dataloader_pin_memory=True,  # Disable pin memory to save VRAM
+        group_by_length=False,
+        report_to="none",  # No reporting for all training
         remove_unused_columns=False,
-        disable_tqdm=tuning_ind == 1,
-        log_level="error" if tuning_ind == 1 else "info",
-        max_steps=config['training'].get('max_steps', -1),
+        disable_tqdm=False,
+        log_level="error",  # Error level logging for all
         # Memory optimization settings
-        gradient_checkpointing=True,
+        gradient_checkpointing=False,
         optim="adamw_torch",  # Use PyTorch optimizer instead of transformers default
-        lr_scheduler_type="cosine",
-        warmup_ratio=0.1
+        lr_scheduler_type="constant",
+        warmup_ratio=config['training']['warmup_ratio'],
+        # Additional memory optimizations for hanging issue
+        dataloader_persistent_workers=False,  # Disable persistent workers
+        include_inputs_for_metrics=False,  # Reduce memory during evaluation
     )
 
     return training_args
 
+def run_training_core(config, hyperparams, base_model_path, tokenized_datasets, output_dir, training_state, save_strategy, save_total_limit, load_best_model_at_end):
+    """Core training function called by hyperparameter tuning and production training."""
 
-def run_training_generic(config, hyperparams, base_model_path, tokenized_path, output_dir, tuning_ind=0):
-    """Generic training function that handles both tuning and production training."""
+    print(f"Training samples: {len(tokenized_datasets['train'])}")
+    print(f"Validation samples: {len(tokenized_datasets['validation'])}")
 
-    # Apply hyperparameters to config
-    config = apply_hyperparameters_to_config(config, hyperparams)
-
-    # Configure for tuning if indicated
-    if tuning_ind == 1:
-        config = configure_for_tuning(config)
-        print("    Configured for hyperparameter tuning")
+    # Load model with quantization
+    model = load_model(config, base_model_path, output_dir, "new")
 
     # Load tokenizer
     if os.path.exists(base_model_path):
-        tokenizer = AutoTokenizer.from_pretrained(base_model_path)
+        tokenizer = AutoTokenizer.from_pretrained(base_model_path, use_fast=True)
     else:
-        tokenizer = AutoTokenizer.from_pretrained(config['model']['base_model'])
+        tokenizer = AutoTokenizer.from_pretrained(config['model']['base_model'], use_fast=True)
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
-    # Load datasets
-    tokenized_datasets = load_datasets(tokenized_path)
-
-    # Filter datasets based on tuning indicator
-    if tuning_ind == 1:
-        tokenized_datasets = filter_preselected_samples(tokenized_datasets)
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    
+    # Set epochs based on training state
+    if training_state == 'tuning':
+        config['training']['epochs'] = 1
+    elif training_state == "early_stopped":
+        config['training']['epochs'] = 3
+    elif training_state == "resumable":
+        config['training']['epochs'] = 3
     else:
-        tokenized_datasets = apply_dataset_reduction(tokenized_datasets, config)
+        config['training']['epochs'] = 5
 
-    tokenized_datasets = prepare_datasets_for_training(tokenized_datasets)
+    config['training']['save_total_limit']=save_total_limit
+    config['training']['save_strategy']=save_strategy
+    config['training']['load_best_model_at_end']=load_best_model_at_end
+    config['training']['disable_tqdm']=False
+    config['training']['group_by_length']=True
 
-    # Load model
-    model = load_model(config, base_model_path, output_dir, "new")
+    for param_name, param_value in hyperparams.items():
+        if param_name == 'lora_rank':
+            # Handle both dict and direct value formats
+            if isinstance(param_value, dict):
+                rank_value = param_value.get('lora_rank', param_value.get('r', 16))
+            else:
+                rank_value = param_value
+            config['lora']['lora_rank'] = rank_value
+            config['lora']['lora_alpha'] = rank_value * 2
+        if 'lora' in param_name:
+            config['lora'][param_name]=param_value
+        if 'effective_batch_size'==param_name:
+            effective_batch_size = get_hardware_batch_config(config)
+            config['training']['batch_size']=effective_batch_size['batch_size']
+            config['training']['gradient_accumulation_steps']=effective_batch_size['gradient_accumulation_steps']
+        else:
+            config['training'][param_name] = param_value
 
-    # Setup training arguments
-    training_args = setup_training_arguments_generic(config, output_dir, tokenized_datasets, tuning_ind)
+    training_args = setup_training_arguments_generic(
+        config, output_dir
+    )
 
+    # Data collator
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
         mlm=False,
+        pad_to_multiple_of=None
     )
-
     callbacks = []
-    if tuning_ind == 0:  # Only use callbacks for production training
+    if training_state != 'tuning':
+        # Add early stopping for production training
         early_stopping = EarlyStoppingCallbackCustom(
-            early_stopping_patience=2,
+            early_stopping_patience=2, 
             early_stopping_threshold=0.0001
         )
         callbacks.append(early_stopping)
-        callbacks.append(TensorBoardCallback())
-
+    
     trainer = Trainer(
         model=model,
         args=training_args,
-        data_collator=data_collator,
         train_dataset=tokenized_datasets["train"],
         eval_dataset=tokenized_datasets["validation"],
-        tokenizer=tokenizer,
-        callbacks=callbacks,
+        data_collator=data_collator,
+        callbacks=callbacks
     )
 
-    print("    Starting training...")
+    # Run training with appropriate messaging
+    if training_state == 'tuning':
+        print("Starting hyperparameter tuning training...")
+    else:
+        print("Starting production training...")
+    
     trainer.train()
 
-    print("    Evaluating...")
+    # Evaluate and return validation loss
     eval_results = trainer.evaluate()
     validation_loss = eval_results['eval_loss']
 
-    if tuning_ind == 0:
-        # Production training - save model and info
-        save_training_info(
-            output_dir=output_dir,
-            config=config,
-            early_stopped=getattr(callbacks[0], 'early_stopped', False) if callbacks else False,
-            resumed=False,
-            original_epochs=config['training']['epochs'],
-            tuned_hyperparams=hyperparams
-        )
+    if training_state == 'tuning':
+        print(f"Hyperparameter tuning completed. Validation Loss: {validation_loss:.4f}")
+    else:
+        print(f"Production training completed. Validation Loss: {validation_loss:.4f}")
 
-        print("Saving final model...")
-        trainer.save_model()
+    # Save model for production training
+    if training_state != 'tuning':
+        print("Saving production model...")
+        trainer.save_model(output_dir)
         tokenizer.save_pretrained(output_dir)
-
-        print("TRAINING COMPLETED!")
-        print("=" * 60)
-        print(f"Final validation loss: {validation_loss:.4f}")
         print(f"Model saved to: {output_dir}")
 
-    # Cleanup
-    del trainer, model
+    # Clean up model from memory
+    del model
+    del trainer
     torch.cuda.empty_cache()
 
     return validation_loss
 
-
-def run_training(config, base_model_path, tokenized_path, output_dir, training_state, training_info,
-                 optimal_hyperparams):
-    """Run production training using the generic training function."""
-    print("\nSTARTING MISTRAL 7B TRAINING")
-    print("=" * 60)
-
-    return run_training_generic(
-        config=config,
-        hyperparams=optimal_hyperparams,
-        base_model_path=base_model_path,
-        tokenized_path=tokenized_path,
-        output_dir=output_dir,
-        tuning_ind=0  # Production training
-    )
-
-
-def main(optimal_hyperparams=None):
-    """Main training function that accepts optional hyperparameters."""
-    print("MISTRAL 7B STORYTELLING MODEL TRAINING")
-    print("=" * 60)
-
-    config_path = os.path.join(cwd, "configs", "model_config.yaml")
-
-    if not os.path.exists(config_path):
-        print(f"Configuration file not found: {config_path}")
-        return
-
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-
-    print(f"Loaded configuration from: {config_path}")
-
-    # Show hyperparameter source
-    if optimal_hyperparams:
-        print("Using supplied optimal hyperparameters")
-    else:
-        print("Using default hyperparameters from config file")
-
-    base_model_path = os.path.join(config['paths']['models'], 'mistral-7b-base')
-    tokenized_path = os.path.join(config['paths']['data_tokenized'], 'datasets')
-    output_dir = os.path.join(config['paths']['models'], 'tuned_story_llm')
-
-    if not os.path.exists(tokenized_path):
-        print(f"Tokenized datasets not found at: {tokenized_path}")
-        print("Please run data_tokenizer.py first.")
-        return
-
-    training_state, training_info = check_training_state(output_dir)
-
-    print(f"\nTraining state: {training_state}")
-
-    if training_state == "completed":
-        print("Training already completed.")
-        response = input("Restart training from scratch? (y/N): ").strip().lower()
-        if response != 'y':
-            print("Training cancelled.")
-            return
-        else:
-            if os.path.exists(output_dir):
-                shutil.rmtree(output_dir)
-            training_state = "new"
-            training_info = None
-
-    elif training_state == "resumable":
-        if configs_match(config, training_info):
-            print("Configuration matches previous training.")
-            response = input("Resume training? (Y/n): ").strip().lower()
-            if response == 'n':
-                print("Training cancelled.")
-                return
-        else:
-            print("Configuration differs from previous training.")
-            print("Starting fresh training...")
-            if os.path.exists(output_dir):
-                shutil.rmtree(output_dir)
-            training_state = "new"
-            training_info = None
-
-    elif training_state == "early_stopped":
-        print("Previous training stopped early.")
-        response = input("Continue training with additional epochs? (Y/n): ").strip().lower()
-        if response == 'n':
-            print("Training cancelled.")
-            return
-        else:
-            config['training']['epochs'] = training_info.get('original_epochs', 3) + 2
-            training_state = "resumable"
-
-    try:
-        validation_loss = run_training(
-            config=config,
-            base_model_path=base_model_path,
-            tokenized_path=tokenized_path,
-            output_dir=output_dir,
-            training_state=training_state,
-            training_info=training_info,
-            optimal_hyperparams=optimal_hyperparams
-        )
-
-        print("\nTRAINING STATISTICS:")
-        print(f"  Final Loss: {validation_loss:.4f}")
-        model_file = os.path.join(output_dir, 'pytorch_model.bin')
-        if os.path.exists(model_file):
-            print(f"  Model Size: {os.path.getsize(model_file) / (1024 ** 3):.2f} GB")
-        print(f"  Output Directory: {output_dir}")
-
-        if optimal_hyperparams:
-            hyperparams_file = os.path.join(output_dir, "optimal_hyperparameters.json")
-            with open(hyperparams_file, 'w') as f:
-                json.dump(optimal_hyperparams, f, indent=2)
-            print(f"  Hyperparameters: {hyperparams_file}")
-
-        print("\nMistral 7B training pipeline completed successfully!")
-
-    except Exception as e:
-        print(f"\nTraining failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return
-
-
-if __name__ == "__main__":
-    main()
+def production_training(config, optimal_hyperparams, base_model_path,tokenized_path, output_dir,training_state):
+    tokenized_datasets=load_datasets(tokenized_path,'production')
+    run_training_core(config, optimal_hyperparams, base_model_path, tokenized_datasets, output_dir,
+                            training_state, 'epoch', '5', True)
