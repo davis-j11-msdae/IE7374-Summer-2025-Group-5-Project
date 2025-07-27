@@ -44,7 +44,7 @@ IE7374-Summer-2025-Group-5-Project/
 │   └── samples/                   # Sample evaluation results
 ├── logs/                          # System logs
 ├── src/
-│   └── Full.py                    # Main control interface
+│   └── full.py                    # Main control interface
 ├── requirements.txt               # Python dependencies
 └── README.md                      # This file
 ```
