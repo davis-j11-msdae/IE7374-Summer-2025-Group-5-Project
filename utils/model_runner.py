@@ -68,16 +68,42 @@ class StoryModelRunner:
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16,
-            device_map="auto" if torch.cuda.is_available() else None,
-            low_cpu_mem_usage=True
-        )
+        try:
+            # First try loading without device mapping
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                torch_dtype=torch.float16,
+                low_cpu_mem_usage=True,
+                trust_remote_code=True
+            )
 
-        self.model.eval()
-        print("Model loaded successfully")
-        return True
+            # Move to appropriate device
+            if torch.cuda.is_available():
+                gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                if gpu_memory_gb >= 10:  # If we have enough VRAM, try GPU
+                    try:
+                        self.model = self.model.to('cuda')
+                        print("Model loaded on GPU")
+                    except RuntimeError as e:
+                        if "out of memory" in str(e).lower():
+                            print("GPU out of memory, keeping model on CPU")
+                            self.model = self.model.to('cpu')
+                        else:
+                            raise e
+                else:
+                    self.model = self.model.to('cpu')
+                    print("Model loaded on CPU due to limited VRAM")
+            else:
+                self.model = self.model.to('cpu')
+                print("Model loaded on CPU (no CUDA available)")
+
+            self.model.eval()
+            print("Model loaded successfully")
+            return True
+
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            return False
 
     def load_evaluation_models(self):
         """Load models for story evaluation."""
@@ -182,6 +208,7 @@ class StoryModelRunner:
         log_operation_status(f"Generating story for {user_info['username']}")
 
         for attempt in range(max_attempts):
+
             story = self.generate_story(prompt, user_info, history_context)
 
             if not story.strip():
@@ -287,7 +314,6 @@ class StoryModelRunner:
     def _create_new_story(self, user_info: Dict[str, Any]):
         """Create a new story interactively."""
         prompt = input("\nEnter your story prompt: ").strip()
-
         if not prompt:
             print("Please enter a valid prompt")
             return

@@ -30,6 +30,15 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
 
-# Development tools
+# Development and notebook support
 jupyter>=1.0.0
-importlib>=1.0.4
+ipywidgets>=8.0.0
+
+# Optional: DeepSpeed (uncomment if using DeepSpeed optimization)
+# deepspeed>=0.9.0
+
+# GPU memory optimization
+ninja>=1.11.0
+
+# For Google Colab compatibility
+google-colab; sys_platform != "win32" and sys_platform != "darwin"

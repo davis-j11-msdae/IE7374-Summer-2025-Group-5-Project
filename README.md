@@ -1,50 +1,55 @@
 # Personalized Storytelling System
 
-An AI-powered storytelling system that fine-tunes Mixtral 8x7B to generate age-appropriate stories with user history integration and comprehensive evaluation.
+An AI-powered storytelling system that fine-tunes Mistral 7B Instruct v0.3 to generate age-appropriate stories with user history integration and comprehensive evaluation.
 
 ## 🎯 Project Overview
 
 This system creates personalized stories for users of different ages by:
-- Fine-tuning Mixtral 8x7B on children's and sci-fi story datasets from Project Gutenberg
+- Fine-tuning Mistral 7B Instruct v0.3 on children's and sci-fi story datasets from Project Gutenberg
 - Generating age-appropriate content for 4 age groups: child (0-5), kid (6-12), teen (13-17), adult (18+)
-- Maintaining user story history with automatic summarization
-- Evaluating story quality, safety, and age appropriateness
+- Maintaining user story history with automatic summarization using Mistral
+- Evaluating story quality, safety, and age appropriateness with integrated Mistral evaluation
 - Supporting story continuation and interactive sessions
+- Optimized hyperparameter tuning for efficient training
 
 ## 📁 Project Structure
 
 ```
 IE7374-Summer-2025-Group-5-Project/
 ├── configs/
-│   └── model_config.yaml          # Model and training configuration
+│   ├── model_config.yaml          # Model and training configuration
+│   └── deepspeed_config.json      # DeepSpeed optimization settings
 ├── utils/
 │   ├── helpers.py                 # Common utility functions
 │   ├── environment_check.py       # System validation
 │   ├── generate_users.py          # User account generator
 │   ├── download_data.py           # Data and model downloading
-│   ├── data_loader.py             # Raw data processing
-│   ├── data_tokenizer.py          # Dataset tokenization
-│   ├── eval.py                    # Story evaluation and classification
-│   ├── train.py                   # Model fine-tuning
-│   ├── hyperparameter_tuning.py   # Optimization of Model Hyperparameters
-│   ├── history.py                 # User history management
+│   ├── data_loader.py             # Raw data processing with evaluation
+│   ├── data_tokenizer.py          # Dataset tokenization with stratification
+│   ├── eval.py                    # Story evaluation using Mistral
+│   ├── train.py                   # Model fine-tuning with quantization
+│   ├── hyperparameter_tuning.py   # Automated hyperparameter optimization
+│   ├── history.py                 # User history management with Mistral summarization
 │   ├── model_runner.py            # Story generation with authentication
 │   └── samples.py                 # Sample evaluation pipeline
 ├── data/
-│   ├── raw/                       # Downloaded datasets
+│   ├── raw/                       # Downloaded Project Gutenberg datasets
 │   ├── processed/                 # Cleaned and age-grouped stories
 │   ├── tokenized/                 # Tokenized datasets for training
 │   ├── evaluated/                 # Quality-assessed stories
 │   └── users/                     # User authentication data
 ├── models/
-│   ├── mixtral-7b-base/           # Base Mixtral model
+│   ├── mistral-7b-base/           # Base Mistral 7B Instruct v0.3 model
 │   └── tuned_story_llm/           # Fine-tuned storytelling model
 ├── outputs/
 │   ├── user_history/              # Individual user story histories
 │   └── samples/                   # Sample evaluation results
 ├── logs/                          # System logs
+├── hyperparameter_results/        # Hyperparameter tuning results
 ├── src/
-│   └── full.py                    # Main control interface
+│   └── full.py                    # Main control interface with authentication
+├── colab_training.ipynb           # Google Colab training notebook
+├── colab_env_setup.py             # Colab environment setup script
 ├── requirements.txt               # Python dependencies
 └── README.md                      # This file
 ```
@@ -61,12 +66,9 @@ cd IE7374-Summer-2025-Group-5-Project
 # Install dependencies
 pip install -r requirements.txt
 
-# Create environment file
+# Create environment file (optional - for Hugging Face token)
 cat > .env << EOF
-OPENAI_API_KEY=your_openai_api_key
 HF_TOKEN=your_huggingface_token
-KAGGLE_USERNAME=your_kaggle_username
-KAGGLE_KEY=your_kaggle_key
 EOF
 ```
 
@@ -75,22 +77,23 @@ EOF
 ```bash
 # Navigate to src directory and run main control script
 cd src
-python Full.py
+python full.py
 ```
 
 ### 3. System Workflow
 
-**Admin Workflow** (requires admin login):
+**Admin Workflow** (requires admin login: username=admin, password=admin):
 1. Check Environment
 2. Download Data and Models  
 3. Generate Users File
 4. Process and Evaluate Data
 5. Tokenize Data
-6. Train Model
-7. Process Sample Stories
-8. Interactive Story Creation
+6. Hyperparameter Tuning
+7. Train Model
+8. Process Sample Stories
+9. Interactive Story Creation
 
-**User Workflow** (regular user login):
+**User Workflow** (regular user login: username format like child_1, password=test):
 - Direct access to Interactive Story Creation
 
 ## 🔧 Configuration
@@ -98,51 +101,62 @@ python Full.py
 ### Model Configuration (`configs/model_config.yaml`)
 
 Key settings:
-- **Model**: Mixtral 8x7B base model from Hugging Face
-- **Training**: 3 epochs, batch size 4, learning rate 2e-5, DeepSpeed optimization
+- **Model**: Mistral 7B Instruct v0.3 from Hugging Face
+- **Training**: 1-5 epochs (tuning vs production), configurable batch sizes, learning rates
+- **Quantization**: 4-bit quantization with NF4 for memory efficiency
+- **LoRA**: Rank 16-64, alpha = 2x rank, targeting key transformer modules
 - **Age Groups**: Child (0-5), Kid (6-12), Teen (13-17), Adult (18+)
-- **Data Sources**: Project Gutenberg categories with configurable minimum downloads
-- **Evaluation**: Perplexity, grammar, coherence, toxicity, and readability metrics
+- **Data Sources**: Project Gutenberg categories with 2000+ download threshold
+- **Evaluation**: Mistral-based quality assessment with toxicity filtering
 
-### DeepSpeed Configuration (`configs/deepspeed_config.json`)
+### Hardware Optimization
 
-Optimized for A100 GPU training:
-- ZeRO Stage 2 optimization
-- CPU optimizer offloading
-- FP16 mixed precision
-- Gradient accumulation and clipping
+The system automatically adapts to available hardware:
+- **A100 (40GB+)**: Full batch sizes, no gradient accumulation
+- **10GB GPUs**: Reduced batch sizes with gradient accumulation
+- **Quantization**: 4-bit loading for memory efficiency
+- **DeepSpeed**: Optional for large-scale training
 
 ## 📊 Data Pipeline
 
 ### 1. Data Download (`utils/download_data.py`)
 - **Project Gutenberg Stories**: Automated download from multiple categories
-  - Science Fiction & Fantasy
-  - Children's & Young Adult Literature  
-  - Adventure Stories
-  - Fairy Tales & Folk Tales
-  - Mythology & Folklore
-  - Humor and Short Stories
-- **Base Model**: Mixtral 8x7B from Hugging Face Hub
+  - Science Fiction & Fantasy (bookshelf 638)
+  - Children's & Young Adult Literature (bookshelf 636)
+  - Adventure Stories (bookshelf 644)
+  - Mythology & Folklore (bookshelf 646)
+  - Humor (bookshelf 641)
+  - Short Stories (bookshelf 634)
+  - Fairy Tales (bookshelf 216)
+- **Base Model**: Mistral 7B Instruct v0.3 from Hugging Face Hub
 - **Copyright Validation**: Automatic public domain verification
 
 ### 2. Data Processing (`utils/data_loader.py`)
 - Extract individual stories from downloaded collections
-- Clean and filter content for quality
-- Assign age groups based on source categories
-- **Integrated Evaluation**: Quality, safety, and appropriateness checking
+- Clean and filter content for quality using regex patterns
+- Assign age groups based on Flesch-Kincaid reading level analysis
+- **Integrated Evaluation**: Quality, safety, and appropriateness checking using Mistral
 - Generate comprehensive statistics and summaries
 
 ### 3. Tokenization (`utils/data_tokenizer.py`)
-- Format stories with age-appropriate instructions
-- Tokenize using Mixtral tokenizer with padding
-- Create train/validation/test splits (80/10/10)
-- Generate tokenization statistics and validation
+- Format stories with age-appropriate instructions using Mistral chat template
+- Tokenize using Mistral tokenizer with padding to max_length
+- Create stratified train/validation/test splits (80/10/10) preserving source distribution
+- Select hyperparameter tuning samples (5% by default)
+- Generate tokenization statistics and validation reports
 
-### 4. Model Training (`utils/train.py`)
-- Fine-tune Mixtral 8x7B on processed story datasets
-- DeepSpeed optimization for memory efficiency
+### 4. Hyperparameter Tuning (`utils/hyperparameter_tuning.py`)
+- **Sequential Optimization**: Learning rate → LoRA rank → Effective batch size → Dropout → Weight decay → Warmup ratio
+- **Hardware-Aware**: Automatically configures batch sizes based on GPU memory
+- **Resumable**: Can continue from interruptions using persistent state
+- **Config-Driven**: Search spaces defined in model_config.yaml
+
+### 5. Model Training (`utils/train.py`)
+- Fine-tune Mistral 7B Instruct v0.3 on processed story datasets
+- 4-bit quantization with LoRA adapters for memory efficiency
+- Early stopping based on validation loss improvements
 - Automatic model saving and evaluation metrics
-- Comprehensive training statistics and validation
+- Supports resuming from checkpoints
 
 ## 🎭 Story Generation Features
 
@@ -153,39 +167,39 @@ Optimized for A100 GPU training:
 - **Default Credentials**: Password `test` for regular users, `admin` for admin user
 
 ### Story Generation
-- **Age-Appropriate Content**: Automatic adjustment based on user age
-- **History Integration**: Stories can reference previous narratives
-- **Story Continuation**: Seamlessly extend existing stories
-- **Quality Assurance**: Automatic filtering of inappropriate content
+- **Age-Appropriate Content**: Automatic adjustment based on user age using reading level analysis
+- **History Integration**: Stories can reference previous narratives through Mistral summarization
+- **Story Continuation**: Seamlessly extend existing stories with context awareness
+- **Quality Assurance**: Automatic filtering using Mistral evaluation and Detoxify
 - **Real-time Evaluation**: Grammar, coherence, and safety scoring
 
 ### Interactive Features
 - User login with age verification
 - Create new stories or continue existing ones
-- View and manage personal story history with summaries
-- Save stories with suggested or custom titles
+- View and manage personal story history with Mistral-generated summaries
+- Save stories with AI-suggested or custom titles
 - Delete unwanted stories from history
 
 ## 📈 Evaluation and Quality Control
 
 ### Content Filtering
-- **Toxicity Detection**: Automatic filtering using Detoxify
+- **Toxicity Detection**: Automatic filtering using Detoxify (threshold: 0.5)
 - **Age Verification**: Stories matched to appropriate age groups using Flesch-Kincaid scoring
-- **Title Validation**: User-provided titles checked for appropriateness
-- **Retry Logic**: Automatic regeneration if content fails quality checks
+- **Title Validation**: User-provided titles checked for appropriateness using Detoxify
+- **Retry Logic**: Automatic regeneration if content fails quality checks (max 3 attempts)
 
-### Quality Metrics
-- **Perplexity**: Measured using GPT-2 for text naturalness
-- **Grammar/Coherence**: Scored via OpenAI GPT-3.5-turbo API
-- **Readability**: Flesch-Kincaid grade level analysis
+### Quality Metrics (Using Mistral Evaluation)
+- **Grammar/Coherence**: Scored via fine-tuned Mistral model with optimized prompts
+- **Perplexity**: Measured using GPT-2 for text naturalness (bucketed: low/medium/high)
+- **Readability**: Flesch-Kincaid grade level analysis with age-appropriate ranges
 - **Safety**: Comprehensive toxicity detection across multiple categories
-- **Length Validation**: Stories within appropriate word count limits
+- **Length Validation**: Stories within appropriate word count limits (100-10,000 words)
 
 ## 💾 User History Management
 
 ### Features (`utils/history.py`)
-- **Automatic Summarization**: BART-large-CNN for concise story summaries
-- **Title Management**: AI-suggested titles with custom override option
+- **Automatic Summarization**: Mistral-based story summarization (2-3 sentences, max 150 chars)
+- **Title Management**: AI-suggested titles with custom override option using Mistral
 - **Story Continuation**: Two modes - update original or save as new story
 - **Statistics Tracking**: Word counts, creation dates, reading analytics
 - **Storage Optimization**: Maximum 5 stories per user with automatic cleanup
@@ -198,21 +212,26 @@ Optimized for A100 GPU training:
 ## 🖥️ Hardware Requirements
 
 ### Training Requirements
-- **GPU**: A100 with 40GB+ VRAM (required for Mixtral 8x7B)
-- **RAM**: 32GB+ system memory
-- **Storage**: 100GB+ free space for models and data
+- **GPU**: 10GB+ VRAM (RTX 3080, RTX 4090, A100, etc.)
+- **RAM**: 16GB+ system memory
+- **Storage**: 60GB+ free space for models and data
 - **CUDA**: Compatible GPU drivers and toolkit
 
 ### Inference Requirements  
-- **GPU**: 16GB+ VRAM (RTX 4090, A6000, or equivalent)
-- **RAM**: 16GB+ system memory
-- **Storage**: 60GB+ for base and fine-tuned models
+- **GPU**: 8GB+ VRAM (RTX 3070, RTX 4070, or equivalent)
+- **RAM**: 12GB+ system memory
+- **Storage**: 40GB+ for base and fine-tuned models
+
+### Google Colab Support
+- **Colab Pro/Pro+**: Recommended for A100 access
+- **Environment Setup**: Automated via `colab_env_setup.py`
+- **Notebook**: `colab_training.ipynb` for cloud training
 
 ## 🔍 System Monitoring
 
 ### Status Tracking
 - Real-time operation status with timestamps
-- Progress bars for long-running operations (>1 minute)
+- Progress bars for long-running operations (>1 minute) using tqdm
 - Comprehensive error reporting with context
 - Performance metrics and resource usage monitoring
 
@@ -227,7 +246,7 @@ Optimized for A100 GPU training:
 ### Automated Testing (`utils/samples.py`)
 - 10 comprehensive test prompts across all age groups
 - Story continuation testing with context preservation
-- Quality and safety validation for all generated content
+- Quality and safety validation for all generated content using Mistral evaluation
 - Detailed evaluation reports with metrics and statistics
 
 ### Sample Categories
@@ -241,15 +260,15 @@ Optimized for A100 GPU training:
 ### Complete System Setup
 ```bash
 cd src
-python Full.py
+python full.py
 # Login as admin (username: admin, password: admin)
-# Follow workflow: 1 → 2 → 8 → 3 → 4 → 5 → 6 → 7
+# Follow workflow: 1 → 2 → 9 → 3 → 4 → 5 → 6 → 7 → 8
 ```
 
 ### User Story Creation
 ```bash
 cd src  
-python Full.py
+python full.py
 # Login as regular user (e.g., username: child_1, password: test)
 # Create and manage personal stories
 ```
@@ -266,19 +285,38 @@ cd utils && python generate_users.py
 cd utils && python download_data.py
 ```
 
+### Google Colab Usage
+```python
+# Upload colab_env_setup.py to Colab, then run:
+exec(open('colab_env_setup.py').read())
+
+# Or if files are in Google Drive:
+import os
+if os.path.exists("colab_env_setup.py"):
+    exec(open("colab_env_setup.py").read())
+else:
+    for root, dirs, files in os.walk("/content/drive"):
+        if "colab_env_setup.py" in files:
+            exec(open(os.path.join(root, "colab_env_setup.py")).read())
+            break
+
+# Then run the main system:
+exec(open('src/full.py').read())
+```
+
 ## 🔧 Troubleshooting
 
 ### Common Issues
-1. **CUDA Out of Memory**: Use DeepSpeed config, reduce batch sizes
-2. **Download Failures**: Verify internet connection and API credentials
+1. **CUDA Out of Memory**: System automatically uses 4-bit quantization and gradient accumulation
+2. **Download Failures**: Verify internet connection and optional HF_TOKEN for gated models
 3. **Model Loading Errors**: Ensure complete model downloads and sufficient disk space
-4. **OpenAI API Issues**: Verify API key validity and rate limits
+4. **Tokenization Issues**: Check for duplicate columns in processed data (automatically cleaned)
 
 ### Performance Optimization
-- Enable DeepSpeed for memory-efficient training
-- Use gradient checkpointing to reduce memory usage
-- Optimize batch sizes for available hardware
-- Leverage FP16 precision when supported
+- **Quantization**: 4-bit loading enabled by default for memory efficiency
+- **Batch Size Adaptation**: Automatic adjustment based on GPU memory
+- **LoRA Configuration**: Efficient fine-tuning with minimal memory footprint
+- **Gradient Accumulation**: Hardware-aware configuration for consistent effective batch sizes
 
 ## 🤝 Contributing
 
@@ -294,13 +332,13 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 🙏 Acknowledgments
 
-- **Mistral AI** for the Mixtral 8x7B foundation model
+- **Mistral AI** for the Mistral 7B Instruct v0.3 foundation model
 - **Hugging Face** for transformers library and model hosting
 - **Project Gutenberg** for public domain literature datasets
-- **OpenAI** for evaluation and quality assessment APIs
+- **Meta** for PEFT (LoRA) implementation
 - **Microsoft** for DeepSpeed optimization framework
-- **Meta** for BART summarization model
+- **Google** for Colab platform support
 
 ---
 
-*Built for educational research in AI-powered creative storytelling*
+*Built for educational research in AI-powered creative storytelling with age-appropriate content generation*

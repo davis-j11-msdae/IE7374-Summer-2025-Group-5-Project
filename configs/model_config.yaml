@@ -26,7 +26,7 @@ training:
 
   learning_rate: 1e-4                  # Most memory efficient option
 
-  epochs: 1
+  epochs: 1                            # Default
 
   warmup_ratio: .05                     # Most memory efficient option
 
@@ -49,10 +49,6 @@ quantization:
   bnb_4bit_quant_type: "nf4"
 
   bnb_4bit_use_double_quant: True
-
-  llm_int8_enable_fp32_cpu_offload: True,  # Critical for 10GB VRAM
-
-  llm_int8_has_fp16_weight: False
 
 
 
@@ -88,11 +84,11 @@ lora:
 
 
 
-# Data Configuration - Longer sequences due to better VRAM efficiency
+# Data Configuration
 
 data:
 
-  max_sequence_length: 2048            # Increased from 1536
+  max_sequence_length: 2048
 
   train_split: 0.8
 
@@ -102,7 +98,7 @@ data:
 
   min_story_length: 100
 
-  max_story_length: 10000              # Allow longer stories
+  max_story_length: 10000
 
 
 
@@ -153,23 +149,6 @@ gutenberg:
       bookshelf_id: 641
 
       description: "Humor"
-
-
-
-    short_stories:
-
-      bookshelf_id: 634
-
-      description: "Short Stories"
-
-
-
-    fairy_tales:
-
-      bookshelf_id: 216
-
-      description: "Children's Myth, Fairy Tales, etc."
-
 
 
 # Age Groups
@@ -252,7 +231,7 @@ paths:
 
 
 
-# Hyperparameter Tuning Configuration - Updated for effective batch size tuning
+# Hyperparameter Tuning Configuration
 
 hyperparameter_tuning:
 
@@ -264,11 +243,11 @@ hyperparameter_tuning:
 
   search_spaces:
 
-    learning_rate: [1e-4, 2e-4, 5e-4]   # Higher LRs for smaller model
+    learning_rate: [1e-4, 2e-4, 5e-4]
 
-    lora_rank: [16, 32, 64]              # Rank only, alpha = 2x rank
+    lora_rank: [16, 32, 64]
 
-    effective_batch_size: [8, 16, 32]    # Tune effective batch sizes
+    effective_batch_size: [8, 16, 32]
 
     lora_dropout: [0.05, 0.1, 0.2]
 
@@ -278,7 +257,7 @@ hyperparameter_tuning:
 
 
 
-# DeepSpeed Configuration - Optimized for smaller model
+# DeepSpeed Configuration
 
 deepspeed:
 

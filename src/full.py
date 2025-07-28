@@ -26,7 +26,8 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'false'  # Prevent tokenizer warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="tf_keras")
 warnings.filterwarnings("ignore", message=".*tf.losses.sparse_softmax_cross_entropy.*")
 warnings.filterwarnings("ignore", message=".*torch.utils.checkpoint.*use_reentrant.*")
-# Add utils to path for imports
+
+# Add utils to path for imports - can be enhanced to protect password, but outside scope of project
 sys.path.append(os.path.join(cwd, 'utils'))
 from helpers import log_operation_status, load_config
 
@@ -147,11 +148,8 @@ def download_data():
 
     print("\nStarting data and model download...")
     print("This will download:")
-    print("  - Children's stories dataset from Project Gutenberg")
-    print("  - Sci-fi and fantasy stories from Project Gutenberg")
-    print("  - Adventure and fairy tale stories from Project Gutenberg")
+    print("  - Stories datasets from Project Gutenberg")
     print("  - Mistral 7B Instruct v0.3 base model from Hugging Face")
-    print("\nNote: This may take 15-30 minutes and requires ~15GB storage")
 
     confirm = input("\nProceed with download? (y/N): ").strip().lower()
     if confirm == 'y':
@@ -176,7 +174,6 @@ def process_data():
     print("  - Evaluate stories for quality, safety, and appropriateness using Mistral")
     print("  - Filter out toxic or inappropriate content")
     print("  - Save processed and evaluated datasets")
-    print("\nNote: Uses Mistral model for evaluation (no API keys needed)")
 
     loader_main()
 
@@ -192,10 +189,10 @@ def tokenize_data():
     print("\nTokenizing processed datasets...")
     print("This will:")
     print("  - Load processed and evaluated story datasets")
-    print("  - Format stories with age-appropriate instructions using Mistral chat format")
+    print("  - Prepend stories with age-appropriate instructions using Mistral chat format")
     print("  - Tokenize using Mistral tokenizer")
     print("  - Create train/validation/test splits")
-    print("  - Select samples for hyperparameter tuning")
+    print("  - Select stratified samples for hyperparameter tuning")
 
     tokenizer_main()
 
@@ -211,8 +208,7 @@ def run_hyperparameter_tuning():
     print("  - Use pre-selected tuning samples from tokenized data")
     print("  - Sequentially optimize learning rate, LoRA params, batch size, etc.")
     print("  - Save optimal hyperparameters for training")
-    print("  - Resume capability if interrupted")
-    print("\nNote: This process can take 1-2 hours depending on GPU")
+    print("  - Has Resume capability if interrupted")
 
     confirm = input("\nProceed with hyperparameter tuning? (y/N): ").strip().lower()
     if confirm == 'y':
@@ -278,18 +274,53 @@ def train_model():
         input("\nPress Enter to continue...")
         return
 
-    # Check for existing trained model
+    # Check for existing trained modeldef train_model():
+    """Train the storytelling model with optimal hyperparameters."""
+    log_operation_status("Model training")
+
+    print("\nTraining storytelling model...")
+
+    # Define paths
+    from helpers import load_config,load_datasets
+    config = load_config()
+    output_dir = os.path.join(config['paths']['models'], 'tuned_story_llm')
+    tokenized_path = os.path.join(config['paths']['data_tokenized'], 'datasets')
+
+    # Check if tokenized data exists
+    if not os.path.exists(tokenized_path):
+        print(f"Tokenized datasets not found at: {tokenized_path}")
+        print("Please run tokenization first (option 4).")
+        input("\nPress Enter to continue...")
+        return
+
+    # Check for existing trained model and determine training state
+    training_state = "new"
+    training_info = None
+    
     if os.path.exists(output_dir):
         # Import training state check function
         sys.path.insert(0, cwd)
         import train
         training_state, training_info = train.check_training_state(output_dir)
 
-        if training_state == "completed" or training_state == "early_stopped":
+        print(f"Found existing model at: {output_dir}")
+        print(f"Training state: {training_state}")
+        
+        if training_state == "completed":
             print("Model training already completed.")
-            if training_state == "early_stopped":
-                print("Previous training ended due to early stopping.")
-
+            restart = input("\nRestart model training from scratch? (y/N): ").strip().lower()
+            if restart != 'y':
+                print("Training cancelled.")
+                input("\nPress Enter to continue...")
+                return
+            else:
+                print("Removing existing model to restart training...")
+                import shutil
+                shutil.rmtree(output_dir)
+                training_state = "new"
+        
+        elif training_state == "early_stopped":
+            print("Previous training ended due to early stopping.")
             restart = input("\nRestart model training from scratch? (y/N): ").strip().lower()
             if restart != 'y':
                 print("Training cancelled.")
@@ -303,13 +334,15 @@ def train_model():
 
         elif training_state == "resumable":
             print("Incomplete training found.")
+            if training_info:
+                completed_epochs = training_info.get('completed_epochs', 0)
+                print(f"Completed epochs: {completed_epochs}")
+            
             resume = input("\nResume training for additional 3 epochs? (Y/n): ").strip().lower()
             if resume == 'n':
                 print("Training cancelled.")
                 input("\nPress Enter to continue...")
                 return
-    else:
-        training_state = "new"
 
     # Check for optimal hyperparameters if starting new training
     optimal_hyperparams = None
@@ -340,10 +373,10 @@ def train_model():
                 input("\nPress Enter to continue...")
                 return
 
+    # Display training information
     print("\nThis will:")
     print("  - Load Mistral 7B Instruct v0.3 base model")
     print("  - Fine-tune on processed story datasets")
-    print("  - Use optimized memory settings for 10GB VRAM")
     if training_state == "resumable":
         print("  - Resume from previous checkpoint for 3 additional epochs")
     elif optimal_hyperparams:
@@ -361,9 +394,9 @@ def train_model():
             import train
             train.run_training_core(
                 config=config,
-                hyperparams=optimal_hyperparams,
+                hyperparams=optimal_hyperparams or {},
                 base_model_path=base_model_path,
-                tokenized_datasets=load_datasets(tokenized_path,training_state),
+                tokenized_datasets=load_datasets(tokenized_path, training_state),
                 output_dir=output_dir,
                 training_state=training_state,
                 save_strategy='epoch',

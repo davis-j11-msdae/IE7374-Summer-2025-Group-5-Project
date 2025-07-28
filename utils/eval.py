@@ -32,25 +32,62 @@ class OptimizedMistralEvaluator:
         self._load_model()
 
     def _load_model(self):
-        """Load Mistral model for evaluation with optimizations."""
+        """Load Mistral model for evaluation with optimizations and VRAM handling."""
         print("Loading optimized Mistral model for evaluation...")
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, use_fast=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_path,
-            torch_dtype=torch.float16,
-            device_map="auto" if torch.cuda.is_available() else None,
-            low_cpu_mem_usage=True,
-            use_cache=True  # Enable KV cache for faster generation
-        )
-        self.model.eval()
+        try:
+            # Check available GPU memory
+            gpu_memory_gb = 0
+            if torch.cuda.is_available():
+                gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
 
-        # Pre-compile common prompt templates
-        self._precompile_prompts()
-        print("Optimized Mistral evaluator loaded")
+            # For limited VRAM (10GB or less), use CPU for evaluation model
+            if gpu_memory_gb <= 10:
+                print("Limited VRAM detected, loading evaluation model on CPU")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    torch_dtype=torch.float16,
+                    device_map="cpu",
+                    low_cpu_mem_usage=True,
+                    use_cache=True
+                )
+            else:
+                # Sufficient VRAM, try GPU loading
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    low_cpu_mem_usage=True,
+                    use_cache=True
+                )
+
+            self.model.eval()
+
+            # Pre-compile common prompt templates
+            self._precompile_prompts()
+            print("Optimized Mistral evaluator loaded")
+
+        except Exception as e:
+            print(f"Error loading evaluation model: {e}")
+            print("Falling back to CPU loading...")
+            try:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    torch_dtype=torch.float16,
+                    device_map="cpu",
+                    low_cpu_mem_usage=True,
+                    use_cache=True
+                )
+                self.model.eval()
+                self._precompile_prompts()
+                print("Evaluation model loaded on CPU as fallback")
+            except Exception as fallback_error:
+                print(f"Failed to load evaluation model even on CPU: {fallback_error}")
+                raise
 
     def _precompile_prompts(self):
         """Pre-tokenize common prompt templates to save time."""
@@ -88,8 +125,9 @@ class OptimizedMistralEvaluator:
             max_length=1024
         )
 
-        if torch.cuda.is_available():
-            inputs = {k: v.cuda() for k, v in inputs.items()}
+        # Move inputs to same device as model
+        model_device = next(self.model.parameters()).device
+        inputs = {k: v.to(model_device) for k, v in inputs.items()}
 
         with torch.no_grad():
             outputs = self.model.generate(
@@ -263,13 +301,29 @@ def load_evaluation_models():
     # Load toxicity detector
     detoxify_model = Detoxify('original')
 
-    # Load perplexity model (GPT-2)
+    # Load perplexity model (GPT-2) with proper device handling for limited VRAM
     perplexity_tokenizer = AutoTokenizer.from_pretrained('gpt2')
-    perplexity_model = AutoModelForCausalLM.from_pretrained(
-        'gpt2',
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto" if torch.cuda.is_available() else None
-    )
+
+    # Check GPU memory and decide device placement for GPT-2
+    gpu_memory_gb = 0
+    if torch.cuda.is_available():
+        gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+
+    # For limited VRAM (10GB or less), load GPT-2 on CPU to avoid conflicts with Mistral
+    if gpu_memory_gb <= 10:
+        print("Loading GPT-2 perplexity model on CPU due to limited VRAM")
+        perplexity_model = AutoModelForCausalLM.from_pretrained(
+            'gpt2',
+            torch_dtype=torch.float32,  # Use float32 for CPU
+            device_map="cpu"
+        )
+    else:
+        # Sufficient VRAM, can use GPU for GPT-2
+        perplexity_model = AutoModelForCausalLM.from_pretrained(
+            'gpt2',
+            torch_dtype=torch.float16,
+            device_map="auto"
+        )
 
     if perplexity_tokenizer.pad_token is None:
         perplexity_tokenizer.pad_token = perplexity_tokenizer.eos_token
@@ -281,8 +335,9 @@ def calculate_perplexity(text: str, tokenizer: AutoTokenizer, model: AutoModelFo
     """Calculate perplexity score for text."""
     inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
 
-    if torch.cuda.is_available():
-        inputs = {k: v.cuda() for k, v in inputs.items()}
+    # Move inputs to same device as model
+    model_device = next(model.parameters()).device
+    inputs = {k: v.to(model_device) for k, v in inputs.items()}
 
     with torch.no_grad():
         outputs = model(**inputs, labels=inputs['input_ids'])

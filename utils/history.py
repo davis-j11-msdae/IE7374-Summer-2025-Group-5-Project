@@ -14,6 +14,7 @@ from utils.helpers import (
 cwd = set_cwd()
 
 
+# Fix for MistralSummarizer to use lazy loading
 class MistralSummarizer:
     """Summarizer using Mistral model for story summarization."""
 
@@ -23,27 +24,62 @@ class MistralSummarizer:
         self.history_config = config['history']
         self.model = None
         self.tokenizer = None
-        self._load_model()
+        # Don't load model immediately - load when first needed
+        print("Mistral summarizer initialized (lazy loading)")
+
+    def _ensure_model_loaded(self):
+        """Load model only when first needed."""
+        if self.model is None:
+            print("Loading Mistral model for summarization...")
+            self._load_model()
 
     def _load_model(self):
         """Load Mistral model for summarization."""
-        print("Loading Mistral model for summarization...")
-
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, use_fast=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_path,
-            torch_dtype=torch.float16,
-            device_map="auto" if torch.cuda.is_available() else None,
-            low_cpu_mem_usage=True
-        )
-        self.model.eval()
-        print("Mistral summarizer loaded")
+        try:
+            # Load without device mapping to avoid meta device issues
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_path,
+                torch_dtype=torch.float16,
+                low_cpu_mem_usage=True,
+                trust_remote_code=True
+            )
+
+            # Move to appropriate device - be more conservative for summarizer
+            if torch.cuda.is_available():
+                gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                # Only use GPU if we have plenty of memory for the summarizer
+                if gpu_memory_gb >= 12:
+                    try:
+                        self.model = self.model.to('cuda')
+                        print("Summarizer model loaded on GPU")
+                    except RuntimeError as e:
+                        if "out of memory" in str(e).lower():
+                            print("GPU out of memory for summarizer, using CPU")
+                            self.model = self.model.to('cpu')
+                        else:
+                            raise e
+                else:
+                    self.model = self.model.to('cpu')
+                    print("Summarizer model loaded on CPU (limited VRAM)")
+            else:
+                self.model = self.model.to('cpu')
+                print("Summarizer model loaded on CPU (no CUDA)")
+
+            self.model.eval()
+            print("Mistral summarizer loaded")
+
+        except Exception as e:
+            print(f"Error loading summarizer model: {e}")
+            raise
 
     def generate_summary(self, story: str) -> str:
         """Generate a summary using Mistral model."""
+        self._ensure_model_loaded()  # Load model if not already loaded
+
         # Ensure story is long enough for summarization
         if len(story.split()) < 50:
             return story[:self.history_config['max_summary_length']]
@@ -65,7 +101,8 @@ Summary:"""
                 max_length=1536  # Leave room for summary
             )
 
-            if torch.cuda.is_available():
+            # Move inputs to same device as model
+            if torch.cuda.is_available() and next(self.model.parameters()).is_cuda:
                 inputs = {k: v.cuda() for k, v in inputs.items()}
 
             with torch.no_grad():

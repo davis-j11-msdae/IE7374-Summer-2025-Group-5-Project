@@ -29,37 +29,88 @@ from utils.helpers import set_cwd
 # Get current working directory for path operations
 cwd = set_cwd()
 
-
 def check_training_state(output_dir):
     """Check if previous training exists and its completion state."""
     if not os.path.exists(output_dir):
         return "new", None
 
+    # Check for checkpoint directories (resumable training)
+    checkpoint_dirs = [d for d in os.listdir(output_dir) if d.startswith('checkpoint-') and os.path.isdir(os.path.join(output_dir, d))]
+    
+    # Check for final model files (completed training)
+    final_model_files = ["config.json", "pytorch_model.bin", "adapter_config.json", "adapter_model.bin"]
+    final_model_exists = any(os.path.exists(os.path.join(output_dir, f)) for f in final_model_files)
+    
+    print(f"Checking {output_dir}:")
+    print(f"  Checkpoint dirs found: {len(checkpoint_dirs)} {checkpoint_dirs}")
+    print(f"  Final model files exist: {final_model_exists}")
+    
+    # If no checkpoints and no final model, directory is empty
+    if not checkpoint_dirs and not final_model_exists:
+        print("  No training artifacts found")
+        return "new", None
+
     trainer_state_file = os.path.join(output_dir, "trainer_state.json")
     training_info_file = os.path.join(output_dir, "training_info.json")
 
-    if not os.path.exists(trainer_state_file):
-        return "new", None
-
+    # Load training info if available
     training_info = {}
     if os.path.exists(training_info_file):
-        with open(training_info_file, 'r') as f:
-            training_info = json.load(f)
+        try:
+            with open(training_info_file, 'r') as f:
+                training_info = json.load(f)
+        except Exception as e:
+            print(f"  Error reading training_info.json: {e}")
 
-    with open(trainer_state_file, 'r') as f:
-        trainer_state = json.load(f)
+    # Check trainer state
+    if os.path.exists(trainer_state_file):
+        try:
+            with open(trainer_state_file, 'r') as f:
+                trainer_state = json.load(f)
+            
+            completed_epochs = trainer_state.get('epoch', 0)
+            training_info['completed_epochs'] = completed_epochs
+            
+            # Check for early stopping
+            early_stopped = training_info.get('early_stopped', False)
+            original_epochs = training_info.get('original_epochs', 5)  # Default to 5
+            max_additional_epochs = 3
 
-    early_stopped = training_info.get('early_stopped', False)
-    original_epochs = training_info.get('original_epochs', 0)
-    completed_epochs = trainer_state.get('epoch', 0)
-    max_additional_epochs = 3
-
-    if early_stopped:
-        return "early_stopped", training_info
-    elif completed_epochs < original_epochs + max_additional_epochs:
+            print(f"  Trainer state: {completed_epochs} epochs completed")
+            
+            if early_stopped:
+                print("  Status: Training was early stopped")
+                return "early_stopped", training_info
+            elif final_model_exists and completed_epochs >= original_epochs:
+                # Check if we can do additional epochs
+                if completed_epochs < original_epochs + max_additional_epochs:
+                    print("  Status: Training completed but can resume for additional epochs")
+                    return "resumable", training_info
+                else:
+                    print("  Status: Training fully completed")
+                    return "completed", training_info
+            else:
+                print("  Status: Training incomplete, can be resumed")
+                return "resumable", training_info
+                
+        except Exception as e:
+            print(f"  Error reading trainer_state.json: {e}")
+    
+    # If we have checkpoints but no trainer state, we can still resume
+    if checkpoint_dirs:
+        print("  Status: Checkpoints found but no trainer state - can be resumed")
+        # Try to determine latest checkpoint
+        latest_checkpoint = max(checkpoint_dirs, key=lambda x: int(x.split('-')[1]))
+        training_info['latest_checkpoint'] = latest_checkpoint
         return "resumable", training_info
-    else:
+    
+    # If we have final model files but no trainer state, consider it completed
+    if final_model_exists:
+        print("  Status: Final model found but no trainer state - assuming completed")
         return "completed", training_info
+    
+    # Fallback
+    return "new", None
 
 
 def save_training_info(output_dir, config, early_stopped=False, resumed=False, original_epochs=None,
@@ -139,6 +190,9 @@ class EarlyStoppingCallbackCustom(EarlyStoppingCallback):
         super().__init__(early_stopping_patience=early_stopping_patience,
                          early_stopping_threshold=early_stopping_threshold)
         self.early_stopped = False
+        # Initialize missing attributes that parent class expects
+        self.metric_for_best_model = "eval_loss"
+        self.greater_is_better = False
 
     def on_evaluate(self, args, state, control, model=None, **kwargs):
         current_score = state.log_history[-1]["eval_loss"]
@@ -153,6 +207,18 @@ class EarlyStoppingCallbackCustom(EarlyStoppingCallback):
                 self.early_stopped = True
                 print(
                     f"Early stopping triggered - validation loss improved by less than {self.early_stopping_threshold}")
+
+    def is_metric_improved(self, metric, reference_metric):
+        """
+        Check if the metric has improved based on the threshold and direction.
+        """
+        if reference_metric is None:
+            return True
+
+        if self.greater_is_better:
+            return metric > reference_metric + self.early_stopping_threshold
+        else:
+            return metric < reference_metric - self.early_stopping_threshold
 
 def setup_quantization_config(config):
     """Setup quantization configuration with Windows compatibility."""
@@ -382,12 +448,20 @@ def run_training_core(config, hyperparams, base_model_path, tokenized_datasets, 
     else:
         config['training']['epochs'] = 5
 
-    config['training']['save_total_limit']=save_total_limit
-    config['training']['save_strategy']=save_strategy
-    config['training']['load_best_model_at_end']=load_best_model_at_end
-    config['training']['disable_tqdm']=False
-    config['training']['group_by_length']=True
+    # Set training arguments
+    config['training']['save_total_limit'] = save_total_limit
+    config['training']['save_strategy'] = save_strategy
+    config['training']['load_best_model_at_end'] = load_best_model_at_end
+    config['training']['disable_tqdm'] = False
+    config['training']['group_by_length'] = True
 
+    # Ensure batch size configuration exists - get hardware-appropriate defaults first
+    if 'batch_size' not in config['training'] or 'gradient_accumulation_steps' not in config['training']:
+        batch_config = get_hardware_batch_config(config)
+        config['training']['batch_size'] = batch_config['batch_size']
+        config['training']['gradient_accumulation_steps'] = batch_config['gradient_accumulation_steps']
+
+    # Apply hyperparameters
     for param_name, param_value in hyperparams.items():
         if param_name == 'lora_rank':
             # Handle both dict and direct value formats
@@ -397,14 +471,26 @@ def run_training_core(config, hyperparams, base_model_path, tokenized_datasets, 
                 rank_value = param_value
             config['lora']['lora_rank'] = rank_value
             config['lora']['lora_alpha'] = rank_value * 2
-        if 'lora' in param_name:
-            config['lora'][param_name]=param_value
-        if 'effective_batch_size'==param_name:
-            effective_batch_size = get_hardware_batch_config(config)
-            config['training']['batch_size']=effective_batch_size['batch_size']
-            config['training']['gradient_accumulation_steps']=effective_batch_size['gradient_accumulation_steps']
+        elif 'lora' in param_name:
+            config['lora'][param_name] = param_value
+        elif param_name == 'effective_batch_size':
+            # Handle effective batch size by recalculating batch config
+            effective_batch_size = param_value
+            batch_config = get_hardware_batch_config(config)
+            # Override the effective batch size calculation
+            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3) if torch.cuda.is_available() else 0
+            if gpu_memory_gb >= 40:  # A100
+                config['training']['batch_size'] = effective_batch_size
+                config['training']['gradient_accumulation_steps'] = 1
+            else:  # 10GB GPU
+                limited_gpu_batch_size = config['training']['limited_gpu_batch_size']
+                config['training']['batch_size'] = limited_gpu_batch_size
+                config['training']['gradient_accumulation_steps'] = effective_batch_size // limited_gpu_batch_size
         else:
             config['training'][param_name] = param_value
+
+    print(f"Using batch_size: {config['training']['batch_size']}")
+    print(f"Using gradient_accumulation_steps: {config['training']['gradient_accumulation_steps']}")
 
     training_args = setup_training_arguments_generic(
         config, output_dir
