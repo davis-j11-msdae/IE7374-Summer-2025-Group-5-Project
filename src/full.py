@@ -16,6 +16,7 @@ else:
     cwd = os.getcwd().rstrip(r"\src")
 os.chdir(cwd)
 import warnings
+current_user = None
 
 # Suppress TensorFlow warnings - these come from detoxify using TensorFlow backend
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN for consistent results
@@ -480,7 +481,14 @@ def interactive_stories():
         input("\nPress Enter to continue...")
         return
 
-    runner.story_session_authenticated()
+    # Use the global current_user instead of re-authenticating
+    global current_user
+    if current_user:
+        # Pass the username from the already authenticated user
+        runner.story_session_authenticated(current_user['username'])
+    else:
+        # Fallback to authentication if somehow current_user is not set
+        runner.interactive_story_session()
 
     input("\nPress Enter to continue...")
 
@@ -545,6 +553,8 @@ def display_welcome():
 
 def main():
     """Main entry point with authentication."""
+    global current_user
+
     setup_directories()
     display_welcome()
 
@@ -559,6 +569,9 @@ def main():
         print("Authentication failed")
         return
 
+    # Store the authenticated user globally
+    current_user = user_info
+
     if user_info['admin']:
         print("\nRECOMMENDED WORKFLOW:")
         print("1. Check Environment → 2. Download Data → 9. Generate Users →")
@@ -566,7 +579,20 @@ def main():
         admin_menu()
     else:
         print(f"\nWelcome to Interactive Story Creation!")
-        interactive_stories()
+        # For regular users, go directly to story creation
+        from model_runner import StoryModelRunner
+
+        runner = StoryModelRunner()
+
+        if runner.users_df.empty:
+            print("No users found. Please run generate_users.py first.")
+            return
+
+        if not runner.load_model():
+            print("Failed to load model. Please run training first.")
+            return
+
+        runner.story_session_authenticated(user_info['username'])
 
 
 if __name__ == "__main__":

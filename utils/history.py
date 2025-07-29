@@ -16,85 +16,52 @@ cwd = set_cwd()
 
 # Fix for MistralSummarizer to use lazy loading
 class MistralSummarizer:
-    """Summarizer using Mistral model for story summarization."""
+    """Summarizer using shared Mistral model for story summarization."""
 
-    def __init__(self, model_path: str, config: Dict[str, Any]):
-        self.model_path = model_path
+    def __init__(self, shared_model=None, shared_tokenizer=None, config=None):
+        self.shared_model = shared_model
+        self.shared_tokenizer = shared_tokenizer
         self.config = config
-        self.history_config = config['history']
-        self.model = None
-        self.tokenizer = None
-        # Don't load model immediately - load when first needed
-        print("Mistral summarizer initialized (lazy loading)")
+        self.history_config = config['history'] if config else {}
+        print("Mistral summarizer initialized (using shared model)")
 
     def _ensure_model_loaded(self):
-        """Load model only when first needed."""
-        if self.model is None:
-            print("Loading Mistral model for summarization...")
-            self._load_model()
+        """Ensure shared model is available."""
+        if self.shared_model is None or self.shared_tokenizer is None:
+            raise RuntimeError("Shared model not provided to summarizer")
 
-    def _load_model(self):
-        """Load Mistral model for summarization."""
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, use_fast=True)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        try:
-            # Load without device mapping to avoid meta device issues
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_path,
-                torch_dtype=torch.float16,
-                low_cpu_mem_usage=True,
-                trust_remote_code=True
-            )
-
-            # Move to appropriate device - be more conservative for summarizer
-            if torch.cuda.is_available():
-                gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-                # Only use GPU if we have plenty of memory for the summarizer
-                if gpu_memory_gb >= 12:
-                    try:
-                        self.model = self.model.to('cuda')
-                        print("Summarizer model loaded on GPU")
-                    except RuntimeError as e:
-                        if "out of memory" in str(e).lower():
-                            print("GPU out of memory for summarizer, using CPU")
-                            self.model = self.model.to('cpu')
-                        else:
-                            raise e
-                else:
-                    self.model = self.model.to('cpu')
-                    print("Summarizer model loaded on CPU (limited VRAM)")
-            else:
-                self.model = self.model.to('cpu')
-                print("Summarizer model loaded on CPU (no CUDA)")
-
-            self.model.eval()
-            print("Mistral summarizer loaded")
-
-        except Exception as e:
-            print(f"Error loading summarizer model: {e}")
-            raise
-
-    def generate_summary(self, story: str) -> str:
-        """Generate a summary using Mistral model."""
-        self._ensure_model_loaded()  # Load model if not already loaded
+    def generate_summary(self, story: str, original_prompt: str = None) -> str:
+        """Generate a summary using shared Mistral model, including original prompt."""
+        self._ensure_model_loaded()
 
         # Ensure story is long enough for summarization
         if len(story.split()) < 50:
-            return story[:self.history_config['max_summary_length']]
+            summary_text = story[:self.history_config['max_summary_length']]
+            if original_prompt:
+                return f"Prompt: {original_prompt}. {summary_text}"
+            return summary_text
 
-        prompt = f"""Summarize the following story in 2-3 sentences. Focus on the main plot points and characters. Keep it concise and engaging.
+        # Include prompt in summarization request
+        if original_prompt:
+            prompt = f"""Summarize the following story in 2-3 sentences. Include the original prompt at the beginning. Focus on the main plot points and characters. Keep it concise and engaging.
 
-Story: {story}
+    Original Prompt: {original_prompt}
 
-Summary:"""
+    Story: {story}
+
+    Summary (include the prompt):"""
+        else:
+            prompt = f"""Summarize the following story in 2-3 sentences. Focus on the main plot points and characters. Keep it concise and engaging.
+
+    Story: {story}
+
+    Summary:"""
 
         try:
             # Format using Mistral's chat template
             formatted_prompt = f"<s>[INST] {prompt} [/INST]"
 
-            inputs = self.tokenizer(
+            inputs = self.shared_tokenizer(
                 formatted_prompt,
                 return_tensors="pt",
                 truncation=True,
@@ -102,20 +69,20 @@ Summary:"""
             )
 
             # Move inputs to same device as model
-            if torch.cuda.is_available() and next(self.model.parameters()).is_cuda:
+            if next(self.shared_model.parameters()).is_cuda:
                 inputs = {k: v.cuda() for k, v in inputs.items()}
 
             with torch.no_grad():
-                outputs = self.model.generate(
+                outputs = self.shared_model.generate(
                     **inputs,
                     max_new_tokens=self.history_config['mistral_summary_max_tokens'],
                     temperature=self.history_config['mistral_summary_temperature'],
                     do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id
+                    pad_token_id=self.shared_tokenizer.eos_token_id,
+                    eos_token_id=self.shared_tokenizer.eos_token_id
                 )
 
-            summary = self.tokenizer.decode(
+            summary = self.shared_tokenizer.decode(
                 outputs[0][inputs['input_ids'].shape[1]:],
                 skip_special_tokens=True
             ).strip()
@@ -136,34 +103,28 @@ Summary:"""
 
         except Exception as e:
             print(f"Summary generation failed: {e}")
-            # Fallback: return first part of story
+            # Fallback: return first part of story with prompt if available
             words = story.split()
             max_words = min(30, len(words))
-            return ' '.join(words[:max_words]) + '...'
+            fallback_summary = ' '.join(words[:max_words]) + '...'
+
+            if original_prompt:
+                return f"Prompt: {original_prompt}. {fallback_summary}"
+            return fallback_summary
 
 
 class StoryHistoryManager:
-    """Manages user story history with Mistral-based summarization and toxicity checking."""
-
-    def __init__(self):
+    def __init__(self, shared_model=None, shared_tokenizer=None):
         self.config = load_config()
         self.history_config = self.config['history']
         self.paths = self.config['paths']
 
-        # Determine model path for summarization
-        models_path = self.config['paths']['models']
-        tuned_model_path = os.path.join(models_path, "tuned_story_llm")
-        base_model_path = os.path.join(models_path, "mistral-7b-base")
-
-        if os.path.exists(tuned_model_path):
-            model_path = tuned_model_path
-        elif os.path.exists(base_model_path):
-            model_path = base_model_path
-        else:
-            model_path = self.config['model']['base_model']
-
         # Initialize Mistral summarizer
-        self.summarizer = MistralSummarizer(model_path, self.config)
+        self.summarizer = MistralSummarizer(
+            shared_model=shared_model,
+            shared_tokenizer=shared_tokenizer,
+            config=self.config
+        )
 
         # Initialize toxicity detector for title validation
         self.detoxify = Detoxify('original')
@@ -199,9 +160,9 @@ class StoryHistoryManager:
             print(f"Error saving history for {username}: {e}")
             return False
 
-    def generate_summary(self, story: str) -> str:
-        """Generate a summary of the story using Mistral."""
-        return self.summarizer.generate_summary(story)
+    def generate_summary(self, story: str, original_prompt: str = None) -> str:
+        """Generate a summary of the story using Mistral, including original prompt."""
+        return self.summarizer.generate_summary(story, original_prompt)
 
     def validate_title(self, title: str) -> bool:
         """Validate that title is not toxic."""
@@ -222,70 +183,113 @@ class StoryHistoryManager:
 
     def suggest_titles(self, story_summary: str) -> List[str]:
         """Suggest titles based on story summary using Mistral."""
-        prompt = f"""Based on this story summary, suggest 3 short, creative titles (each under 50 characters). Respond with only the titles, one per line:
+        # Extract key words from summary for simple title generation
+        summary_words = story_summary.split()[:20]  # First 20 words only
+        key_summary = ' '.join(summary_words)
 
-Summary: {story_summary}
+        prompt = f"""Given this story summary, suggest ONE short title (maximum 5 words):
 
-Titles:"""
+    Summary: {key_summary}
 
-        try:
-            # Format using Mistral's chat template
-            formatted_prompt = f"<s>[INST] {prompt} [/INST]"
+    Title:"""
 
-            inputs = self.summarizer.tokenizer(
-                formatted_prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=1024
-            )
+        suggested_titles = []
 
-            if torch.cuda.is_available():
-                inputs = {k: v.cuda() for k, v in inputs.items()}
+        # Try to generate 3 titles with separate calls
+        for attempt in range(3):
+            try:
+                self.summarizer._ensure_model_loaded()
 
-            with torch.no_grad():
-                outputs = self.summarizer.model.generate(
-                    **inputs,
-                    max_new_tokens=60,
-                    temperature=0.7,  # Slightly higher for creativity
-                    do_sample=True,
-                    pad_token_id=self.summarizer.tokenizer.eos_token_id,
-                    eos_token_id=self.summarizer.tokenizer.eos_token_id
+                formatted_prompt = f"<s>[INST] {prompt} [/INST]"
+
+                inputs = self.summarizer.shared_tokenizer(
+                    formatted_prompt,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=512  # Shorter context
                 )
 
-            response = self.summarizer.tokenizer.decode(
-                outputs[0][inputs['input_ids'].shape[1]:],
-                skip_special_tokens=True
-            ).strip()
+                if next(self.summarizer.shared_model.parameters()).is_cuda:
+                    inputs = {k: v.cuda() for k, v in inputs.items()}
 
-            # Extract titles from response
-            lines = [line.strip() for line in response.split('\n') if line.strip()]
-            suggested_titles = []
+                with torch.no_grad():
+                    outputs = self.summarizer.shared_model.generate(
+                        **inputs,
+                        max_new_tokens=10,  # Very limited tokens
+                        temperature=0.7,
+                        do_sample=True,
+                        pad_token_id=self.summarizer.shared_tokenizer.eos_token_id,
+                        eos_token_id=self.summarizer.shared_tokenizer.eos_token_id,
+                        repetition_penalty=1.2
+                    )
 
-            for line in lines[:3]:  # Take first 3 lines
-                # Clean up the title (remove numbers, quotes, etc.)
-                title = re.sub(r'^\d+\.?\s*', '', line)  # Remove leading numbers
-                title = title.strip('"\'')  # Remove quotes
-                title = title[:self.history_config['title_max_length']]  # Truncate if needed
+                response = self.summarizer.shared_tokenizer.decode(
+                    outputs[0][inputs['input_ids'].shape[1]:],
+                    skip_special_tokens=True
+                ).strip()
 
-                if title and self.validate_title(title):
+                # Aggressive cleaning of the response
+                title = response.split('.')[0].split('\n')[0].strip()
+
+                # Remove markdown formatting and special characters
+                title = re.sub(r'\*+', '', title)  # Remove asterisks
+                title = re.sub(r'_+', '', title)  # Remove underscores
+                title = re.sub(r'#+', '', title)  # Remove hash symbols
+                title = re.sub(r'\[.*?\]', '', title)  # Remove brackets
+                title = re.sub(r'\(.*?\)', '', title)  # Remove parentheses
+                title = re.sub(r'[^\w\s\-\'"]', ' ', title)  # Replace special chars with spaces
+
+                # Clean up multiple spaces and trim
+                title = re.sub(r'\s+', ' ', title).strip()
+                title = title.strip('"\'')
+
+                # Remove common prefixes/suffixes that might appear
+                prefixes_to_remove = ['title:', 'story:', 'the story of', 'a tale of']
+                for prefix in prefixes_to_remove:
+                    if title.lower().startswith(prefix):
+                        title = title[len(prefix):].strip()
+
+                # Limit to first 5 words maximum
+                words = title.split()
+                if len(words) > 5:
+                    title = ' '.join(words[:5])
+
+                # Final cleanup - ensure proper capitalization
+                if title:
+                    title = ' '.join(word.capitalize() for word in title.split())
+
+                # Check if it's reasonable length and validate
+                if (title and
+                        5 <= len(title) <= self.history_config['title_max_length'] and
+                        self.validate_title(title) and
+                        title not in suggested_titles):
                     suggested_titles.append(title)
 
-            # Add fallback titles if needed
-            if len(suggested_titles) < 3:
-                fallback_titles = ["An Amazing Adventure", "A Wonderful Tale", "The Journey Begins"]
-                for fallback in fallback_titles:
-                    if len(suggested_titles) < 3 and self.validate_title(fallback):
-                        suggested_titles.append(fallback)
+            except Exception as e:
+                print(f"Title generation attempt {attempt + 1} failed: {e}")
+                continue
 
-            return suggested_titles
+        # Fill with safe fallbacks if needed
+        safe_fallbacks = [
+            "A Wonderful Tale",
+            "An Amazing Adventure",
+            "The Great Story",
+            "A Magical Journey",
+            "The Special Day"
+        ]
 
-        except Exception as e:
-            print(f"Title suggestion failed: {e}")
-            # Fallback to simple extraction
-            words = story_summary.split()
-            if len(words) > 3:
-                return ["An Amazing Adventure", "A Wonderful Tale", "The Journey Begins"]
-            return ["My Story"]
+        for fallback in safe_fallbacks:
+            if len(suggested_titles) >= 3:
+                break
+            if fallback not in suggested_titles:
+                suggested_titles.append(fallback)
+
+        return suggested_titles[:3]
+
+    def _ensure_model_loaded(self):
+        """Ensure shared model is available."""
+        if self.shared_model is None or self.shared_tokenizer is None:
+            raise RuntimeError("Shared model not provided to summarizer")
 
     def get_user_titles(self, username: str) -> List[str]:
         """Get list of story titles for a user."""
@@ -307,8 +311,8 @@ Titles:"""
         """Save a story to user history."""
         log_operation_status(f"Saving story for {username}")
 
-        # Generate summary
-        summary = self.generate_summary(story)
+        # Generate summary including the original prompt
+        summary = self.generate_summary(story, prompt)
 
         # Handle title
         if title is None:
@@ -391,7 +395,10 @@ Titles:"""
 
         # Combine stories
         combined_story = existing_story['full_story'] + "\n\n" + new_content
-        combined_summary = self.generate_summary(combined_story)
+
+        # Use the original prompt for summary generation
+        original_prompt = existing_story.get('prompt', '')
+        combined_summary = self.generate_summary(combined_story, original_prompt)
 
         if save_as_new:
             # Save as new story
@@ -471,39 +478,3 @@ Titles:"""
             'first_story_date': first_date,
             'last_story_date': last_date
         }
-
-
-def main():
-    """Demo function for history manager."""
-    history_manager = StoryHistoryManager()
-
-    # Test with demo user
-    demo_user = "demo_user"
-    demo_story = """
-    Once upon a time, in a magical forest filled with talking animals, 
-    there lived a young fox named Felix. Felix was known throughout the 
-    forest for his curiosity and kind heart. One day, while exploring 
-    a part of the forest he had never seen before, Felix discovered a 
-    hidden cave with glowing crystals.
-    """
-
-    # Save story
-    success = history_manager.save_story(
-        username=demo_user,
-        story=demo_story,
-        age=8,
-        prompt="A magical adventure in a forest"
-    )
-
-    if success:
-        # Show user titles
-        titles = history_manager.get_user_titles(demo_user)
-        print(f"\nUser stories: {titles}")
-
-        # Show statistics
-        stats = history_manager.get_user_statistics(demo_user)
-        print(f"\nUser statistics: {stats}")
-
-
-if __name__ == "__main__":
-    main()

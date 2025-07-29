@@ -19,7 +19,7 @@ class StoryModelRunner:
         self.config = load_config()
         self.model = None
         self.tokenizer = None
-        self.history_manager = StoryHistoryManager()
+        self.history_manager = None  # Initialize after model loading
         self.evaluation_models = None
         self.users_df = self._load_users()
 
@@ -99,6 +99,14 @@ class StoryModelRunner:
 
             self.model.eval()
             print("Model loaded successfully")
+
+            # Initialize history manager with shared model
+            self.history_manager = StoryHistoryManager(
+                shared_model=self.model,
+                shared_tokenizer=self.tokenizer
+            )
+            print("History manager initialized with shared model")
+
             return True
 
         except Exception as e:
@@ -106,11 +114,25 @@ class StoryModelRunner:
             return False
 
     def load_evaluation_models(self):
-        """Load models for story evaluation."""
+        """Load models for story evaluation using shared model when possible."""
         if self.evaluation_models is None:
             log_operation_status("Loading evaluation models")
-            self.evaluation_models = load_evaluation_models()
+
+            # Use shared model for evaluation
+            from eval import load_evaluation_models
+            self.evaluation_models = load_evaluation_models(
+                shared_model=self.model,
+                shared_tokenizer=self.tokenizer
+            )
             print("Evaluation models loaded")
+
+    def evaluate_story(self, story: str, user_age: int) -> Dict[str, Any]:
+        """Evaluate generated story for quality and appropriateness."""
+        if self.evaluation_models is None:
+            self.load_evaluation_models()
+
+        from eval import evaluate_single_text
+        return evaluate_single_text(story, user_age, self.evaluation_models, include_perplexity=False)
 
     def format_story_prompt(self, prompt: str, age: int, history_context: str = None) -> str:
         """Format prompt with age-appropriate instructions using Mistral's chat format."""
@@ -150,7 +172,8 @@ class StoryModelRunner:
             max_length=1024  # Increased for Mistral's longer context
         )
 
-        if torch.cuda.is_available():
+        # Move inputs to same device as model
+        if next(self.model.parameters()).is_cuda:
             inputs = {k: v.cuda() for k, v in inputs.items()}
 
         with torch.no_grad():
@@ -173,11 +196,6 @@ class StoryModelRunner:
 
         return generated_text.strip()
 
-    def evaluate_story(self, story: str, user_age: int) -> Dict[str, Any]:
-        """Evaluate generated story for quality and appropriateness."""
-        if self.evaluation_models is None:
-            self.load_evaluation_models()
-
         return evaluate_single_text(story, user_age, self.evaluation_models)
 
     def check_story_appropriateness(self, story: str, user_age: int) -> Dict[str, Any]:
@@ -185,7 +203,13 @@ class StoryModelRunner:
         evaluation = self.evaluate_story(story, user_age)
 
         user_age_group = get_age_group(user_age)
-        predicted_age_group = evaluation['predicted_age_group']
+
+        # Handle missing predicted_age_group with fallback
+        predicted_age_group = evaluation.get('predicted_age_group', user_age_group)
+
+        # Handle case where predicted_age_group might be None or empty
+        if not predicted_age_group or predicted_age_group not in ['child', 'kid', 'teen', 'adult']:
+            predicted_age_group = user_age_group
 
         age_hierarchy = {'child': 0, 'kid': 1, 'teen': 2, 'adult': 3}
 
@@ -193,9 +217,12 @@ class StoryModelRunner:
                 age_hierarchy[predicted_age_group] <= age_hierarchy[user_age_group]
         )
 
+        # Handle missing is_toxic with fallback
+        is_toxic = evaluation.get('is_toxic', False)
+
         return {
-            'is_appropriate': is_age_appropriate and not evaluation['is_toxic'],
-            'is_toxic': evaluation['is_toxic'],
+            'is_appropriate': is_age_appropriate and not is_toxic,
+            'is_toxic': is_toxic,
             'is_age_appropriate': is_age_appropriate,
             'predicted_age_group': predicted_age_group,
             'user_age_group': user_age_group,
@@ -208,7 +235,6 @@ class StoryModelRunner:
         log_operation_status(f"Generating story for {user_info['username']}")
 
         for attempt in range(max_attempts):
-
             story = self.generate_story(prompt, user_info, history_context)
 
             if not story.strip():
@@ -259,11 +285,9 @@ class StoryModelRunner:
 
         self._run_story_session(user_info)
 
-    def story_session_authenticated(self):
+    def story_session_authenticated(self, username: str):
         """Run story session for already authenticated user (from main menu)."""
-        print("\nEnter your username to continue:")
-        username = input("Username: ").strip()
-
+        # Look up user info from username
         user_row = self.users_df[self.users_df['username'] == username]
         if user_row.empty:
             print("User not found")
@@ -314,6 +338,7 @@ class StoryModelRunner:
     def _create_new_story(self, user_info: Dict[str, Any]):
         """Create a new story interactively."""
         prompt = input("\nEnter your story prompt: ").strip()
+
         if not prompt:
             print("Please enter a valid prompt")
             return
@@ -393,11 +418,19 @@ class StoryModelRunner:
 
                 if result['success']:
                     new_content = result['story']
+                    evaluation = result['evaluation']
 
                     print(f"\nStory Continuation:")
                     print("=" * 50)
                     print(new_content)
                     print("=" * 50)
+
+                    print(f"\nContinuation Statistics:")
+                    print(f"  Length: {len(new_content)} characters")
+                    print(f"  Reading Level: {evaluation.get('flesch_kincaid_score', 'N/A')}")
+                    print(f"  Predicted Age Group: {evaluation.get('predicted_age_group', 'N/A')}")
+                    print(
+                        f"  Quality Scores: Grammar {evaluation.get('grammar_score', 0):.1f}/100, Coherence {evaluation.get('coherence_score', 0):.1f}/100")
 
                     print(f"\nSave Options:")
                     print("1. Update original story")
